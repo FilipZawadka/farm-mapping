@@ -29,15 +29,18 @@ def _get_api_key(cfg: RunPodConfig) -> str:
     return key
 
 
-def _build_docker_args(cfg: PipelineConfig, config_name: str) -> str:
-    """Build the docker_args string for RunPod create_pod.
+_DOCKER_ARGS = (
+    "python3 -c "
+    "__import__('os').execvp('bash',['bash','-c',__import__('os').environ['STARTUP_SCRIPT']])"
+)
+"""RunPod/tini splits docker_args by whitespace with no shell-style quoting,
+so ``bash -c "script with spaces"`` is impossible.  Instead we pass the real
+script through the STARTUP_SCRIPT env-var and use a space-free Python
+one-liner that execs bash with the correct argv."""
 
-    The pytorch image uses ``tini -- bash`` as entrypoint+cmd.
-    RunPod replaces CMD with docker_args, tokenised like a shell command.
-    We pass ``bash -c "script"`` so tini execs bash, which runs our script.
-    The RunPod SDK embeds docker_args into a GraphQL query WITHOUT escaping,
-    so inner double-quotes must be escaped as ``\\"`` to survive the mutation.
-    """
+
+def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
+    """Build the bash script that will be stored in the STARTUP_SCRIPT env var."""
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     repo = getattr(cfg.runpod, "github_repo", "")
     branch = getattr(cfg.runpod, "github_branch", "main")
@@ -52,8 +55,7 @@ def _build_docker_args(cfg: PipelineConfig, config_name: str) -> str:
     parts.append(f"cd {code_dir}")
     parts.append("pip install --no-cache-dir -r requirements-train.txt")
     parts.append(f"python -m training.train --config configs/{config_name}")
-    script = " && ".join(parts)
-    return f'bash -c \\"{script}\\"'
+    return " && ".join(parts)
 
 
 def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -> dict:
@@ -71,7 +73,8 @@ def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -
         "gpu_type_id": gpu_type,
         "container_disk_in_gb": 20,
         "volume_mount_path": volume_mount,
-        "docker_args": _build_docker_args(cfg, config_name),
+        "docker_args": _DOCKER_ARGS,
+        "env": {"STARTUP_SCRIPT": _build_startup_script(cfg, config_name)},
     }
     if cloud_type != "ALL":
         kwargs["cloud_type"] = cloud_type

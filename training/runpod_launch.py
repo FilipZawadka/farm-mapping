@@ -29,11 +29,11 @@ def _get_api_key(cfg: RunPodConfig) -> str:
     return key
 
 
-def _build_startup_cmd(cfg: PipelineConfig, config_name: str) -> str:
-    """Shell command that runs when the pod starts.
+def _build_docker_args(cfg: PipelineConfig, config_name: str) -> str:
+    """Build the docker_args string for RunPod create_pod.
 
-    Wrapped in ``bash -c '...'`` so RunPod executes it through a shell
-    (otherwise tini tries to exec the first token as a binary).
+    Uses ``-c`` flag so the pytorch image's default ``bash`` entrypoint
+    runs this as a shell command string.
     """
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     repo = getattr(cfg.runpod, "github_repo", "")
@@ -41,16 +41,16 @@ def _build_startup_cmd(cfg: PipelineConfig, config_name: str) -> str:
 
     parts: list[str] = []
     if repo:
+        parts.append(f"apt-get update && apt-get install -y git")
         parts.append(
-            f"(test -d {code_dir}/.git"
+            f"([ -d {code_dir}/.git ]"
             f" && cd {code_dir} && git fetch origin && git reset --hard origin/{branch}"
             f" || git clone --branch {branch} --single-branch {repo} {code_dir})"
         )
     parts.append(f"cd {code_dir}")
     parts.append("pip install --no-cache-dir -r requirements-train.txt")
     parts.append(f"python -m training.train --config configs/{config_name}")
-    inner = " && ".join(parts)
-    return f"bash -c '{inner}'"
+    return "-c '" + " && ".join(parts) + "'"
 
 
 def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -> dict:
@@ -68,7 +68,7 @@ def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -
         "gpu_type_id": gpu_type,
         "container_disk_in_gb": 20,
         "volume_mount_path": volume_mount,
-        "docker_args": _build_startup_cmd(cfg, config_name),
+        "docker_args": _build_docker_args(cfg, config_name),
     }
     if cloud_type != "ALL":
         kwargs["cloud_type"] = cloud_type

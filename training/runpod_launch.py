@@ -32,8 +32,10 @@ def _get_api_key(cfg: RunPodConfig) -> str:
 def _build_docker_args(cfg: PipelineConfig, config_name: str) -> str:
     """Build the docker_args string for RunPod create_pod.
 
-    Uses ``-c`` flag so the pytorch image's default ``bash`` entrypoint
-    runs this as a shell command string.
+    The pytorch image uses ``tini -- bash`` as entrypoint+cmd.
+    RunPod replaces CMD with docker_args, tokenised like a shell command.
+    We pass ``bash -c "script"`` so tini execs bash, which runs our script.
+    Double quotes are used so the tokeniser keeps the inner string as one arg.
     """
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     repo = getattr(cfg.runpod, "github_repo", "")
@@ -41,16 +43,16 @@ def _build_docker_args(cfg: PipelineConfig, config_name: str) -> str:
 
     parts: list[str] = []
     if repo:
-        parts.append(f"apt-get update && apt-get install -y git")
+        parts.append("apt-get update -qq && apt-get install -y -qq git")
         parts.append(
-            f"([ -d {code_dir}/.git ]"
-            f" && cd {code_dir} && git fetch origin && git reset --hard origin/{branch}"
-            f" || git clone --branch {branch} --single-branch {repo} {code_dir})"
+            f"git clone --branch {branch} --single-branch {repo} {code_dir}"
+            f" || (cd {code_dir} && git fetch origin && git reset --hard origin/{branch})"
         )
     parts.append(f"cd {code_dir}")
     parts.append("pip install --no-cache-dir -r requirements-train.txt")
     parts.append(f"python -m training.train --config configs/{config_name}")
-    return "-c '" + " && ".join(parts) + "'"
+    script = " && ".join(parts)
+    return f'bash -c "{script}"'
 
 
 def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -> dict:

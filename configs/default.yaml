@@ -1,0 +1,88 @@
+# ============================================================================
+# Farm Detection ML Pipeline -- Master Configuration
+# ============================================================================
+# Change any value here to reconfigure the pipeline without editing code.
+
+# --- Data ---
+data:
+  countries: [thailand]
+  species_filter: [Chickens, Pigs, Turkeys, Ducks]
+  categories_include: [Farm]
+  # Region-based train/val/test split.  Format: "country_key" or "country_key/state".
+  # Set all three to null for random stratified splitting (default).
+  train_regions: null             # e.g. [thailand] or [united_states/AL, united_states/MS]
+  val_regions: null               # e.g. [united_states/MO]
+  test_regions: null              # e.g. [united_states/NC]
+  osm_farm_cache_dir: data/osm_farm_finder  # cached OSM farm-finder results
+  # OSM tags to search when running osm_farm_finder (key=value format)
+  # osm_farm_tags: [landuse=farmyard, building=farm, ...]
+  negative_sampling:
+    strategy: random_rural        # random_rural | hard_negative | stratified | osm_buildings
+    ratio: 1.0                    # negatives per positive
+    min_distance_m: 2000          # min distance from any known farm
+    seed: 42
+    osm_cache_dir: data/osm_negatives  # cached Overpass results per region
+
+# --- Patch Extraction ---
+patches:
+  patch_size_px: 128              # pixels per side
+  resolution_m: 10                # Sentinel-2 native 10 m
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median               # median | least_cloudy
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches
+  num_workers: 4                  # parallel EE requests
+
+# --- Model ---
+model:
+  architecture: resnet50          # resnet50 | vit_small | prithvi_eo
+  hub_name: microsoft/resnet-50   # HuggingFace model identifier
+  pretrained: true
+  num_classes: 2
+  input_channels: 9               # len(bands) + len(indices)
+  freeze_backbone_epochs: 3       # freeze backbone for N epochs then unfreeze
+
+# --- Training ---
+training:
+  epochs: 30
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine               # cosine | step | plateau
+  early_stopping_patience: 5
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+
+# --- MLflow ---
+mlflow:
+  tracking_uri: ./mlruns           # local directory or remote server URI
+  experiment_name: farm_detection_v1
+  log_model: true
+
+# --- RunPod (optional) ---
+runpod:
+  gpu_type: "NVIDIA A40"
+  docker_image: farm-mapping-train:latest
+  volume_mount: /workspace/data
+  api_key_env: RUNPOD_API_KEY     # name of the env var holding the API key
+
+# --- Inference ---
+inference:
+  checkpoint: output/best_model.pt
+  threshold: 0.5
+  confidence_tiers:
+    high: 0.8
+    medium: 0.5
+    low: 0.3
+
+# --- Visualization ---
+visualization:
+  output_dir: output/maps
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: false

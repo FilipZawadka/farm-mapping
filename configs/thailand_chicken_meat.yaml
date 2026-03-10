@@ -1,0 +1,127 @@
+# ============================================================================
+# Thailand Broiler (Chicken Meat) Farm Discovery via OSM
+# ============================================================================
+# Run:  python -m training.osm_farm_finder --config configs/thailand_chicken_meat.yaml
+
+data:
+  countries: [thailand]
+  species_filter: [Chickens]
+  categories_include: ["Farm (meat)"]
+  train_regions: [thailand]
+  osm_farm_cache_dir: data/osm_farm_finder
+  osm_farm_tags:
+    - landuse=farmyard
+    - building=farm
+    - building=barn
+    - building=farm_auxiliary
+    - building=chicken_coop
+    - building=hatchery
+    - industrial=livestock
+    - place=farm
+  osm_farm_species_keywords:
+    Chickens:
+      # English
+      - chicken
+      - poultry
+      - broiler
+      - layer
+      - egg
+      - hen
+      - chicken_coop
+      - hatchery
+      # Thai
+      - "ไก่"
+      - "สัตว์ปีก"
+      - "ฟาร์มไก่"
+      - "เนื้อไก่"
+      - "ไข่ไก่"
+    Pigs:
+      - pig
+      - swine
+      - pork
+      - sow
+      - boar
+      - sty
+      - "หมู"
+      - "สุกร"
+      - "ฟาร์มหมู"
+    Cattle:
+      - cattle
+      - cow
+      - beef
+      - dairy
+      - buffalo
+      - cowshed
+      - "วัว"
+      - "โค"
+      - "กระบือ"
+    Ducks:
+      - duck
+      - "เป็ด"
+      - "ฟาร์มเป็ด"
+    Turkeys:
+      - turkey
+      - "ไก่งวง"
+  negative_sampling:
+    strategy: random_rural
+    ratio: 1.0
+    min_distance_m: 2000
+    seed: 42
+    osm_cache_dir: data/osm_negatives
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches_thailand_chicken
+  num_workers: 4
+
+model:
+  architecture: resnet50
+  hub_name: microsoft/resnet-50
+  pretrained: true
+  num_classes: 2
+  input_channels: 9
+  freeze_backbone_epochs: 3
+
+training:
+  epochs: 30
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 5
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+
+mlflow:
+  tracking_uri: ./mlruns
+  experiment_name: thailand_chicken_meat_v1
+  log_model: true
+
+runpod:
+  gpu_type: "NVIDIA A40"
+  docker_image: farm-mapping-train:latest
+  volume_mount: /workspace/data
+  api_key_env: RUNPOD_API_KEY
+
+inference:
+  checkpoint: output/best_model.pt
+  threshold: 0.5
+  confidence_tiers:
+    high: 0.8
+    medium: 0.5
+    low: 0.3
+
+visualization:
+  output_dir: output/maps_thailand_chicken
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: false

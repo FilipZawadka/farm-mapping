@@ -1,0 +1,50 @@
+# Secrets / credentials — NEVER commit these
+.env
+*.json
+!package.json
+!tsconfig.json
+**/private-key*.json
+**/google-api-key*.json
+**/credentials*.json
+**/service-account*.json
+
+# Data / model artifacts
+data/
+output/
+mlruns/
+notebooks/
+*.npy
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.log
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Cursor / VSCode AI rules
+.cursor/rules/codacy.mdc
+.github/instructions/codacy.instructions.md
+
+
+TODO.md

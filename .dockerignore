@@ -1,0 +1,41 @@
+.git
+.env
+*.json
+.cursor
+.github
+.codacy
+.idea
+.vscode
+__pycache__
+*.pyc
+*.pyo
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.ipynb_checkpoints
+
+# Data / model artifacts
+data/
+output/
+mlruns/
+*.npy
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.log
+
+# Notebooks & docs (not needed in training image)
+notebooks/
+docs/
+tests/
+TODO.md
+deep_reaserch.md
+.dockerignore
+Dockerfile
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~

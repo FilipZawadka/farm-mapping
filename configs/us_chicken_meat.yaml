@@ -1,0 +1,78 @@
+# ============================================================================
+# US Broiler (Chicken Meat) Farm Detection
+# ============================================================================
+# Trains on AL, MS, MD  |  Validates on MO  |  Tests on NC
+# Positives: Farm Transparency "Farm (meat)" chicken entries
+# Negatives: OSM non-farm buildings (warehouses, hangars, industrial, etc.)
+
+data:
+  countries: [united_states]
+  species_filter: [Chickens]
+  categories_include: ["Farm (meat)"]
+  train_regions: [united_states/AL, united_states/MS, united_states/MD]
+  val_regions: [united_states/MO]
+  test_regions: [united_states/NC]
+  negative_sampling:
+    strategy: osm_buildings
+    ratio: 1.0
+    min_distance_m: 2000
+    seed: 42
+    osm_tags: [warehouse, industrial, hangar, commercial, retail, barn]
+    osm_cache_dir: data/osm_negatives
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches_us_chicken
+  num_workers: 4
+
+model:
+  architecture: resnet50
+  hub_name: microsoft/resnet-50
+  pretrained: true
+  num_classes: 2
+  input_channels: 9
+  freeze_backbone_epochs: 3
+
+training:
+  epochs: 1
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 5
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+
+mlflow:
+  tracking_uri: ./mlruns
+  experiment_name: us_chicken_meat_v1
+  log_model: true
+
+runpod:
+  gpu_type: "NVIDIA A40"
+  docker_image: farm-mapping-train:latest
+  volume_mount: /workspace/data
+  api_key_env: RUNPOD_API_KEY
+
+inference:
+  checkpoint: output/best_model.pt
+  threshold: 0.5
+  confidence_tiers:
+    high: 0.8
+    medium: 0.5
+    low: 0.3
+
+visualization:
+  output_dir: output/maps_us_chicken
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: false

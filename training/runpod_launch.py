@@ -35,7 +35,8 @@ def _build_docker_args(cfg: PipelineConfig, config_name: str) -> str:
     The pytorch image uses ``tini -- bash`` as entrypoint+cmd.
     RunPod replaces CMD with docker_args, tokenised like a shell command.
     We pass ``bash -c "script"`` so tini execs bash, which runs our script.
-    Double quotes are used so the tokeniser keeps the inner string as one arg.
+    The RunPod SDK embeds docker_args into a GraphQL query WITHOUT escaping,
+    so inner double-quotes must be escaped as ``\\"`` to survive the mutation.
     """
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     repo = getattr(cfg.runpod, "github_repo", "")
@@ -52,7 +53,7 @@ def _build_docker_args(cfg: PipelineConfig, config_name: str) -> str:
     parts.append("pip install --no-cache-dir -r requirements-train.txt")
     parts.append(f"python -m training.train --config configs/{config_name}")
     script = " && ".join(parts)
-    return f'bash -c "{script}"'
+    return f'bash -c \\"{script}\\"'
 
 
 def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -> dict:

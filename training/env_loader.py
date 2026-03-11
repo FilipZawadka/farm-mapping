@@ -6,14 +6,16 @@ Env vars used:
     RUNPOD_API_KEY          – RunPod API key
     GEE_SERVICE_ACCOUNT     – Google Earth Engine service account email
     GEE_KEY_FILE            – path to GEE service account JSON key
-    GEE_PRIVATE_KEY_JSON    – (alternative) full JSON key content as a string;
-                              when set, a temp file is created automatically
+    GEE_PRIVATE_KEY_JSON    – (alternative) full JSON key content as a string,
+                              or base64-encoded JSON (avoids special-char issues
+                              in secret stores). A temp file is created automatically
                               so you never need to copy key files to pods.
     GOOGLE_MAPS_API_KEY     – Google Maps / Places API key
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -47,6 +49,8 @@ def load_dotenv_notebook() -> None:
 def _materialize_key_json() -> str:
     """Write GEE_PRIVATE_KEY_JSON to a temp file and return its path.
 
+    Accepts either raw JSON or base64-encoded JSON (useful when the secret
+    store mangles special characters like newlines inside private keys).
     The file is created once per process and reused on subsequent calls.
     """
     global _GEE_KEY_TMPFILE  # noqa: PLW0603
@@ -54,6 +58,8 @@ def _materialize_key_json() -> str:
         return _GEE_KEY_TMPFILE
 
     raw = os.environ["GEE_PRIVATE_KEY_JSON"]
+    if not raw.lstrip().startswith("{"):
+        raw = base64.b64decode(raw).decode("utf-8")
     data = json.loads(raw)
     fd, path = tempfile.mkstemp(suffix=".json", prefix="gee_key_")
     with os.fdopen(fd, "w") as fh:

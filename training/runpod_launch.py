@@ -35,8 +35,8 @@ Use bash as the executable and pass a tiny command string to ``-lc``.
 The real startup script lives in STARTUP_SCRIPT and is executed via eval."""
 
 
-_CPU_IMAGE = "runpod/base:0.7.0-ubuntu2004"
-"""RunPod base image for CPU-only data-prep pods (candidates + patch extraction)."""
+_CPU_IMAGE = "runpod/base:1.0.2-ubuntu2404"
+"""RunPod base image (Ubuntu 24.04, Python 3.12) for CPU-only data-prep pods."""
 
 
 def _build_clone_steps(cfg: PipelineConfig) -> list[str]:

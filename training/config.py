@@ -181,7 +181,7 @@ class RunPodConfig(BaseModel):
     gpu_type: str = "NVIDIA A40"
     gpu_fallbacks: list[str] = []
     cloud_type: Literal["SECURE", "COMMUNITY", "ALL"] = "ALL"
-    docker_image: str = "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime"
+    docker_image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
     volume_mount: str = "/workspace"
     code_dir: str = "/workspace/farm-mapping"
     github_repo: str = ""

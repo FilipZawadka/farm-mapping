@@ -5,16 +5,23 @@ Secrets live ONLY in .env (gitignored). Code references them via os.environ.
 Env vars used:
     RUNPOD_API_KEY          – RunPod API key
     GEE_SERVICE_ACCOUNT     – Google Earth Engine service account email
-    GEE_KEY_FILE            – path to GEE service account JSON key (relative to project root)
+    GEE_KEY_FILE            – path to GEE service account JSON key
+    GEE_PRIVATE_KEY_JSON    – (alternative) full JSON key content as a string;
+                              when set, a temp file is created automatically
+                              so you never need to copy key files to pods.
     GOOGLE_MAPS_API_KEY     – Google Maps / Places API key
 """
 
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+_GEE_KEY_TMPFILE: str | None = None
 
 
 def load_dotenv() -> None:
@@ -37,19 +44,52 @@ def load_dotenv_notebook() -> None:
     _load(root / ".env")
 
 
-def get_gee_credentials():
-    """Return (service_account, key_path) from env vars."""
+def _materialize_key_json() -> str:
+    """Write GEE_PRIVATE_KEY_JSON to a temp file and return its path.
+
+    The file is created once per process and reused on subsequent calls.
+    """
+    global _GEE_KEY_TMPFILE  # noqa: PLW0603
+    if _GEE_KEY_TMPFILE and Path(_GEE_KEY_TMPFILE).exists():
+        return _GEE_KEY_TMPFILE
+
+    raw = os.environ["GEE_PRIVATE_KEY_JSON"]
+    data = json.loads(raw)
+    fd, path = tempfile.mkstemp(suffix=".json", prefix="gee_key_")
+    with os.fdopen(fd, "w") as fh:
+        json.dump(data, fh)
+    _GEE_KEY_TMPFILE = path
+    return path
+
+
+def get_gee_credentials() -> tuple[str, str]:
+    """Return ``(service_account, key_path)`` from env vars.
+
+    Supports two modes:
+
+    * **File mode** (local dev): set ``GEE_SERVICE_ACCOUNT`` + ``GEE_KEY_FILE``.
+    * **Inline mode** (RunPod / CI): set ``GEE_SERVICE_ACCOUNT`` +
+      ``GEE_PRIVATE_KEY_JSON`` (the full JSON key content as a string).
+      A temp file is created automatically.
+    """
     sa = os.environ.get("GEE_SERVICE_ACCOUNT", "")
-    key = os.environ.get("GEE_KEY_FILE", "")
     if not sa:
         raise EnvironmentError(
             "GEE_SERVICE_ACCOUNT not set. Add it to .env (see .env.example)."
         )
-    if not key:
+
+    inline_json = os.environ.get("GEE_PRIVATE_KEY_JSON", "")
+    key_file = os.environ.get("GEE_KEY_FILE", "")
+
+    if inline_json:
+        return sa, _materialize_key_json()
+
+    if not key_file:
         raise EnvironmentError(
-            "GEE_KEY_FILE not set. Add it to .env (see .env.example)."
+            "Neither GEE_KEY_FILE nor GEE_PRIVATE_KEY_JSON is set. "
+            "Add one of them to .env (see .env.example)."
         )
-    key_path = Path(key)
+    key_path = Path(key_file)
     if not key_path.is_absolute():
         key_path = PROJECT_ROOT / key_path
     if not key_path.exists():

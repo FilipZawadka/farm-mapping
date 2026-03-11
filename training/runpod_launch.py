@@ -29,14 +29,11 @@ def _get_api_key(cfg: RunPodConfig) -> str:
     return key
 
 
-_DOCKER_ARGS = (
-    "python3 -c "
-    "__import__('os').execvp('bash',['bash','-c',__import__('os').environ['STARTUP_SCRIPT']])"
-)
-"""RunPod/tini splits docker_args by whitespace with no shell-style quoting,
-so ``bash -c "script with spaces"`` is impossible.  Instead we pass the real
-script through the STARTUP_SCRIPT env-var and use a space-free Python
-one-liner that execs bash with the correct argv."""
+_DOCKER_ARGS = "eval $STARTUP_SCRIPT"
+"""RunPod passes docker_args through a shell, so quotes in the string are
+consumed by that shell (breaking both ``bash -c '…'`` and Python one-liners).
+The actual script is delivered via the STARTUP_SCRIPT env-var; ``eval``
+re-parses the expanded value so ``&&``, ``||``, sub-shells, etc. work."""
 
 
 def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:

@@ -90,40 +90,41 @@ class CountryConfig:
 # Pre-registered countries
 # ---------------------------------------------------------------------------
 
+# Farm Transparency Project uses "All facilities in {Country}.csv" — keep original names
 COUNTRIES: dict[str, CountryConfig] = {
     "thailand": CountryConfig(
         name="Thailand",
         iso_code="TH",
         bounds=(97.3, 5.6, 105.6, 20.5),
-        farm_transparency_path="farm_transparency_maps/All facilities in Thailand.csv",
-        osm_path="osm_farms/All facilities in Thailand.csv",
+        farm_transparency_path="farms/farm_transparency/All facilities in Thailand.csv",
+        osm_path="farms/osm/All facilities in Thailand.csv",
     ),
     "united_states": CountryConfig(
         name="United States",
         iso_code="US",
         bounds=(-125.0, 24.5, -66.9, 49.4),
         tile_size_deg=0.5,
-        farm_transparency_path="farm_transparency_maps/All facilities in United States.csv",
+        farm_transparency_path="farms/farm_transparency/All facilities in United States.csv",
     ),
     "united_kingdom": CountryConfig(
         name="United Kingdom",
         iso_code="GB",
         bounds=(-8.2, 49.9, 1.8, 60.9),
-        farm_transparency_path="farm_transparency_maps/All facilities in United Kingdom.csv",
+        farm_transparency_path="farms/farm_transparency/All facilities in United Kingdom.csv",
     ),
     "brazil": CountryConfig(
         name="Brazil",
         iso_code="BR",
         bounds=(-73.9, -33.7, -34.8, 5.3),
         tile_size_deg=0.5,
-        osm_path="osm_farms/All facilities in Brazil.csv",
+        osm_path="farms/osm/All facilities in Brazil.csv",
     ),
     "australia": CountryConfig(
         name="Australia",
         iso_code="AU",
         bounds=(113.3, -43.6, 153.6, -10.7),
         tile_size_deg=0.5,
-        farm_transparency_path="farm_transparency_maps/All facilities in Australia.csv",
+        farm_transparency_path="farms/farm_transparency/All facilities in Australia.csv",
     ),
 }
 

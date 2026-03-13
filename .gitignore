@@ -8,8 +8,8 @@
 **/credentials*.json
 **/service-account*.json
 
-# Data / model artifacts
 data/
+
 output/
 mlruns/
 notebooks/

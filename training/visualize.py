@@ -175,8 +175,8 @@ def generate_prediction_map(
 
 def visualize(cfg: PipelineConfig) -> Path:
     """Load scored candidates and generate the prediction map."""
-    patches_dir = Path(cfg.patches.output_dir)
-    scored_path = patches_dir / "scored_candidates.parquet"
+    output_dir = Path(cfg.patches.output_dir)
+    scored_path = output_dir / "scored_candidates.parquet"
 
     if not scored_path.exists():
         log.error("No scored_candidates.parquet found -- run inference first")

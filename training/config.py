@@ -69,7 +69,7 @@ class NegativeSamplingConfig(BaseModel):
             "church", "school", "hangar",
         ]
     )
-    osm_cache_dir: str = "data/osm_negatives"
+    osm_cache_dir: str = "data/cache/osm_negatives"
 
 
 class DataConfig(BaseModel):
@@ -79,7 +79,8 @@ class DataConfig(BaseModel):
     train_regions: Optional[list[str]] = None
     val_regions: Optional[list[str]] = None
     test_regions: Optional[list[str]] = None
-    osm_farm_cache_dir: str = "data/osm_farm_finder"
+    candidates_dir: str = "data/candidates"
+    osm_farm_cache_dir: str = "data/cache/osm_farm_finder"
     osm_farm_tags: list[str] = Field(
         default_factory=lambda: [
             "landuse=farmyard", "building=farm", "building=barn",
@@ -147,6 +148,40 @@ class PatchConfig(BaseModel):
     @property
     def patch_extent_m(self) -> float:
         return self.patch_size_px * self.resolution_m
+
+
+def imagery_config_hash(patch_cfg: PatchConfig) -> str:
+    """Stable hash of imagery-affecting config so different bands/date_range don't overwrite patches."""
+    payload: dict[str, Any] = {}
+    if patch_cfg.imagery_sources:
+        payload["imagery_sources"] = patch_cfg.imagery_sources
+    else:
+        payload["bands"] = patch_cfg.bands
+        payload["indices"] = patch_cfg.indices
+        payload["composite"] = patch_cfg.composite
+        payload["max_cloud_cover"] = patch_cfg.max_cloud_cover
+    payload["date_range"] = patch_cfg.date_range
+    canonical = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+def imagery_metadata(patch_cfg: PatchConfig, band_names: list[str]) -> dict[str, str]:
+    """Metadata dict for patch_meta.csv describing the imagery source."""
+    if patch_cfg.imagery_sources:
+        providers = [
+            s.get("provider", "earth_engine_s2")
+            for s in patch_cfg.imagery_sources
+        ]
+        provider = "+".join(providers)
+    else:
+        provider = "earth_engine_s2"
+    bands_str = ",".join(band_names) if band_names else ",".join(patch_cfg.bands + patch_cfg.indices)
+    return {
+        "bands": bands_str,
+        "date_range": ",".join(patch_cfg.date_range),
+        "composite": patch_cfg.composite,
+        "provider": provider,
+    }
 
 
 class ModelConfig(BaseModel):
@@ -273,6 +308,9 @@ def resolve_paths(cfg: PipelineConfig, root: Optional[Path] = None) -> PipelineC
     )
     cfg.data.osm_farm_cache_dir = str(
         (root / cfg.data.osm_farm_cache_dir).resolve()
+    )
+    cfg.data.candidates_dir = str(
+        (root / cfg.data.candidates_dir).resolve()
     )
     if cfg.cache.enabled and cfg.cache.backend == "local":
         cfg.cache.local.base_path = str(

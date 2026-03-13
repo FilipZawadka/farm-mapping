@@ -330,14 +330,33 @@ def build_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     return combined
 
 
-def save_candidates(gdf: gpd.GeoDataFrame, output_dir: str | Path) -> Path:
-    """Persist candidate set as geoparquet."""
-    out = Path(output_dir)
+def save_candidates(
+    gdf: gpd.GeoDataFrame,
+    candidates_dir: str | Path,
+    countries: list[str],
+) -> list[Path]:
+    """Persist candidate set as human-readable CSVs (one per country).
+
+    Saves to ``{candidates_dir}/{country_key}.csv``.
+    """
+    out = Path(candidates_dir)
     out.mkdir(parents=True, exist_ok=True)
-    path = out / "candidates.parquet"
-    gdf.to_parquet(path, index=False)
-    log.info("Saved %d candidates to %s", len(gdf), path)
-    return path
+
+    name_to_key = build_country_key_map()
+    gdf_keys = gdf["country"].map(name_to_key).fillna("")
+
+    saved: list[Path] = []
+    for country_key in countries:
+        subset = gdf[gdf_keys == country_key]
+        if len(subset) == 0:
+            continue
+        csv_cols = [c for c in subset.columns if c != "geometry"]
+        path = out / f"{country_key}.csv"
+        subset[csv_cols].to_csv(path, index=False)
+        log.info("Saved %d candidates to %s", len(subset), path)
+        saved.append(path)
+
+    return saved
 
 
 def main() -> None:
@@ -352,7 +371,10 @@ def main() -> None:
 
     cfg = resolve_paths(load_config(args.config))
     candidates = build_candidates(cfg)
-    save_candidates(candidates, cfg.patches.output_dir)
+    save_candidates(candidates, cfg.data.candidates_dir, cfg.data.countries)
+
+    from src.data_sources import generate_all_farms_csv
+    generate_all_farms_csv()
 
 
 if __name__ == "__main__":

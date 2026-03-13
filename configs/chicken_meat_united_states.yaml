@@ -1,24 +1,26 @@
 # ============================================================================
-# US Egg (Layer) Farm Detection — RunPod-ready
+# US Broiler (Chicken Meat) Farm Detection
 # ============================================================================
-# Train: IA, OH, IN  |  Val: PA  |  Test: TX
-# Positives: Farm Transparency "Farm (eggs)" chicken entries
+# Trains on AL, MS, MD  |  Validates on MO  |  Tests on NC
+# Positives: Farm Transparency "Farm (meat)" chicken entries
 # Negatives: OSM non-farm buildings (warehouses, hangars, industrial, etc.)
 
 data:
   countries: [united_states]
   species_filter: [Chickens]
-  categories_include: ["Farm (eggs)"]
-  train_regions: [united_states/IA, united_states/OH, united_states/IN]
-  val_regions: [united_states/PA]
-  test_regions: [united_states/TX]
+  categories_include: ["Farm (meat)"]
+  candidates_dir: data/candidates/chicken_meat
+  train_regions: [united_states/AL, united_states/MS, united_states/MD]
+  val_regions: [united_states/MO]
+  test_regions: [united_states/NC]
+  osm_farm_cache_dir: data/cache/osm_farm_finder
   negative_sampling:
     strategy: osm_buildings
     ratio: 1.0
     min_distance_m: 2000
     seed: 42
     osm_tags: [warehouse, industrial, hangar, commercial, retail, barn]
-    osm_cache_dir: data/osm_negatives_egg
+    osm_cache_dir: data/cache/osm_negatives
 
 patches:
   patch_size_px: 128
@@ -28,7 +30,7 @@ patches:
   composite: median
   date_range: ["2023-01-01", "2023-12-31"]
   max_cloud_cover: 15
-  output_dir: data/patches_us_egg
+  output_dir: data/patches/chicken_meat/united_states
   num_workers: 4
 
 model:
@@ -40,7 +42,7 @@ model:
   freeze_backbone_epochs: 3
 
 training:
-  epochs: 30
+  epochs: 1
   batch_size: 32
   learning_rate: 0.0001
   weight_decay: 0.01
@@ -53,23 +55,15 @@ training:
 
 mlflow:
   tracking_uri: ./mlruns
-  experiment_name: us_egg_farms_v1
+  experiment_name: chicken_meat_united_states_v1
   log_model: true
 
 runpod:
   gpu_type: "NVIDIA A40"
-  gpu_fallbacks:
-    - "NVIDIA RTX A5000"
-    - "NVIDIA RTX 4000 Ada Generation"
-    - "NVIDIA GeForce RTX 4090"
-  cloud_type: "ALL"               # SECURE | COMMUNITY | ALL
   docker_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
   volume_mount: /workspace
   code_dir: /workspace/farm-mapping
-  github_repo: https://github.com/FilipZawadka/farm-mapping.git
-  github_branch: main
   api_key_env: RUNPOD_API_KEY
-  # network_volume_id: set in .env or uncomment with your volume ID
 
 inference:
   checkpoint: output/best_model.pt
@@ -80,7 +74,7 @@ inference:
     low: 0.3
 
 visualization:
-  output_dir: output/maps_us_egg
+  output_dir: output/maps_chicken_meat_us
   show_true_positives: true
   show_false_positives: true
   show_false_negatives: true

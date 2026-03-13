@@ -81,12 +81,19 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
     parts.append(f"[ -d {venv} ] || python -m venv {venv}")
     parts.append(f"{venv}/bin/pip install --no-cache-dir -r requirements-train.txt")
     parts.append(
-        f"PATCH_DIR=$({py} -c \"from training.config import "
+        f"CAND_DIR=$({py} -c \"from training.config import "
         f"load_config, resolve_paths; cfg=resolve_paths(load_config('configs/{config_name}')); "
-        "print(cfg.patches.output_dir)\")"
+        "print(cfg.data.candidates_dir)\")"
     )
     parts.append(
-        "if [ ! -f \"$PATCH_DIR/candidates.parquet\" ] || [ ! -f \"$PATCH_DIR/patch_meta.parquet\" ]; "
+        f"PATCHES_ROOT=$({py} -c \"from pathlib import Path; "
+        f"from training.config import load_config, resolve_paths; "
+        f"cfg=resolve_paths(load_config('configs/{config_name}')); "
+        "od=Path(cfg.patches.output_dir); "
+        "print(next((p for p in [od]+list(od.parents) if p.name=='patches'), od.parent))\")"
+    )
+    parts.append(
+        "if ! ls \"$CAND_DIR\"/*.csv 1>/dev/null 2>&1 || [ ! -f \"$PATCHES_ROOT/patch_meta.csv\" ]; "
         f"then {py} -m training.candidates --config configs/{config_name} "
         f"&& {py} -m training.patch_extraction --config configs/{config_name}; "
         "fi"

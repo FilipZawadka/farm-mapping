@@ -6,7 +6,7 @@ raw results, and generates an interactive HTML map.
 
 Usage::
 
-    python -m training.osm_farm_finder --config configs/thailand_chicken_meat.yaml
+    python -m training.osm_farm_finder --config configs/chicken_meat_thailand.yaml
 """
 
 from __future__ import annotations

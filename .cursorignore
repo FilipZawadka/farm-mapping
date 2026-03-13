@@ -1,0 +1,14 @@
+!data/
+!notebooks/
+!output/
+!mlruns/
+!src/
+!configs/
+!training/
+!inference/
+!visualization/
+!utils/
+!tests/
+!docs/
+!scripts/
+!README.md

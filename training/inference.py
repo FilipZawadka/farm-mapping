@@ -76,19 +76,59 @@ def _attach_labels(result, candidates):
     result["true_label"] = result["true_label"].astype(int)
 
 
+def _find_patches_root(output_dir: Path) -> Path:
+    """Walk up from *output_dir* to find the ``patches/`` ancestor."""
+    for parent in [output_dir, *output_dir.parents]:
+        if parent.name == "patches":
+            return parent
+    return output_dir.parent
+
+
+def _load_candidates_csv(candidates_dir: str | Path, countries: list[str]) -> pd.DataFrame:
+    """Load candidate CSVs from ``{candidates_dir}/{country}.csv``."""
+    frames: list[pd.DataFrame] = []
+    for country in countries:
+        csv_path = Path(candidates_dir) / f"{country}.csv"
+        if csv_path.exists():
+            frames.append(pd.read_csv(csv_path))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 @torch.no_grad()
 def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     """Run inference on all extracted patches and return scored GeoDataFrame."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    patches_dir = Path(cfg.patches.output_dir)
-    meta = pd.read_parquet(patches_dir / "patch_meta.parquet")
-    candidates = pd.read_parquet(patches_dir / "candidates.parquet")
+    output_dir = Path(cfg.patches.output_dir)
+    patches_root = _find_patches_root(output_dir)
+
+    meta_path = patches_root / "patch_meta.csv"
+    if meta_path.exists():
+        meta = pd.read_csv(meta_path)
+    else:
+        meta = pd.read_parquet(patches_root / "patch_meta.parquet")
+
+    if "imagery_config_hash" in meta.columns:
+        from .config import imagery_config_hash
+        current_hash = imagery_config_hash(cfg.patches)
+        meta = meta[meta["imagery_config_hash"] == current_hash].reset_index(drop=True)
+        if len(meta) == 0:
+            raise FileNotFoundError(
+                f"No patches with imagery_config_hash={current_hash}. Re-run patch extraction."
+            )
+
+    candidates = _load_candidates_csv(cfg.data.candidates_dir, cfg.data.countries)
+    if len(candidates) == 0:
+        cand_parquet = output_dir / "candidates.parquet"
+        if cand_parquet.exists():
+            candidates = pd.read_parquet(cand_parquet)
 
     valid_ids = set(meta["candidate_id"].astype(str))
     cands_filtered = candidates[candidates["id"].astype(str).isin(valid_ids)].copy()
 
-    ds = PatchDataset(meta, cands_filtered, patches_dir, augment=False)
+    ds = PatchDataset(meta, cands_filtered, patches_root, augment=False)
     loader = DataLoader(ds, batch_size=cfg.training.batch_size, shuffle=False, num_workers=0)
 
     model = _load_model(cfg, device)
@@ -103,7 +143,7 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     geometry = [Point(lng, lat) for lng, lat in zip(result["lng"], result["lat"])]
     scored_gdf = gpd.GeoDataFrame(result, geometry=geometry, crs="EPSG:4326")
 
-    output_path = patches_dir / "scored_candidates.parquet"
+    output_path = output_dir / "scored_candidates.parquet"
     scored_gdf.to_parquet(output_path, index=False)
     log.info("Saved %d scored candidates to %s", len(scored_gdf), output_path)
     return scored_gdf

@@ -201,7 +201,7 @@ def train(cfg: PipelineConfig) -> Path:
     torch.manual_seed(cfg.training.seed)
     np.random.seed(cfg.training.seed)
 
-    patches_dir = Path(cfg.patches.output_dir)
+    patches_dir = None
     if getattr(cfg, "cache", None) and cfg.cache.enabled:
         from .storage import get_cache_backend
         backend = get_cache_backend(cfg)

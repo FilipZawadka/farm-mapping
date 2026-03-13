@@ -13,7 +13,8 @@ data:
   train_regions: null             # e.g. [thailand] or [united_states/AL, united_states/MS]
   val_regions: null               # e.g. [united_states/MO]
   test_regions: null              # e.g. [united_states/NC]
-  osm_farm_cache_dir: data/osm_farm_finder  # cached OSM farm-finder results
+  candidates_dir: data/candidates
+  osm_farm_cache_dir: data/cache/osm_farm_finder  # cached OSM farm-finder results
   # OSM tags to search when running osm_farm_finder (key=value format)
   # osm_farm_tags: [landuse=farmyard, building=farm, ...]
   negative_sampling:
@@ -21,7 +22,7 @@ data:
     ratio: 1.0                    # negatives per positive
     min_distance_m: 2000          # min distance from any known farm
     seed: 42
-    osm_cache_dir: data/osm_negatives  # cached Overpass results per region
+    osm_cache_dir: data/cache/osm_negatives  # cached Overpass results per region
 
 # --- Patch Extraction ---
 patches:

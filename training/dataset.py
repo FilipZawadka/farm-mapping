@@ -1,7 +1,7 @@
 """PyTorch Dataset for Sentinel-2 farm-detection patches.
 
 Handles:
-- Loading .npy patches + labels from patch_meta.parquet
+- Loading .npy patches + labels from patch_meta.csv
 - Region-based **or** random stratified train / val / test splits
 - Configurable augmentations (flip, rotation, brightness jitter)
 """
@@ -17,7 +17,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from .config import PipelineConfig, matches_any_region
+from .config import PipelineConfig, imagery_config_hash, matches_any_region
 
 log = logging.getLogger(__name__)
 
@@ -37,11 +37,13 @@ class PatchDataset(Dataset):
         patches_dir: Path,
         augment: bool = False,
         rng_seed: int = 42,
+        n_spectral_bands: int = 6,
     ):
         self.meta = meta.reset_index(drop=True)
         self.patches_dir = Path(patches_dir)
         self.augment = augment
         self.rng = np.random.default_rng(rng_seed)
+        self.n_spectral_bands = n_spectral_bands
 
         label_map = dict(zip(
             candidates["id"].astype(str),
@@ -66,6 +68,11 @@ class PatchDataset(Dataset):
 
         if np.isnan(arr).any():
             arr = np.nan_to_num(arr, nan=0.0)
+
+        # S2 SR bands are stored as raw 0-10000; scale to ~0-1 for the model.
+        # Index bands (NDVI, NDBI, NDWI) are already in [-1, 1].
+        if self.n_spectral_bands > 0:
+            arr[:self.n_spectral_bands] /= 10_000.0
 
         if self.augment:
             arr = self._augment(arr)
@@ -227,6 +234,26 @@ def _random_split_indices(
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def _load_candidates_csv(candidates_dir: str | Path, countries: list[str]) -> pd.DataFrame:
+    """Load candidate CSVs from ``{candidates_dir}/{country}.csv``."""
+    frames: list[pd.DataFrame] = []
+    for country in countries:
+        csv_path = Path(candidates_dir) / f"{country}.csv"
+        if csv_path.exists():
+            frames.append(pd.read_csv(csv_path))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _find_patches_root(output_dir: Path) -> Path:
+    """Walk up from *output_dir* to find the ``patches/`` ancestor."""
+    for parent in [output_dir, *output_dir.parents]:
+        if parent.name == "patches":
+            return parent
+    return output_dir.parent
+
+
 def build_splits(
     cfg: PipelineConfig,
     patches_dir: Optional[Path] = None,
@@ -236,17 +263,49 @@ def build_splits(
     When ``train_regions`` is configured, rows are assigned to splits by
     geographic region. Otherwise the legacy random stratified split is used.
 
-    If *patches_dir* is given, use it as the patch root; else use
-    ``cfg.patches.output_dir``.
+    If *patches_dir* is given, use it as the patch root; else derive
+    the ``patches/`` ancestor from ``cfg.patches.output_dir``.
 
     Returns ``(train_ds, val_ds, test_ds)``.
     """
-    patches_dir = Path(patches_dir) if patches_dir is not None else Path(cfg.patches.output_dir)
-    meta_path = patches_dir / "patch_meta.parquet"
-    candidates_path = patches_dir / "candidates.parquet"
+    output_dir = Path(cfg.patches.output_dir)
+    if patches_dir is not None:
+        patches_root = Path(patches_dir)
+    else:
+        patches_root = _find_patches_root(output_dir)
 
-    meta = pd.read_parquet(meta_path)
-    candidates = pd.read_parquet(candidates_path)
+    meta_path = patches_root / "patch_meta.csv"
+    if meta_path.exists():
+        meta = pd.read_csv(meta_path)
+    else:
+        meta_parquet = patches_root / "patch_meta.parquet"
+        if meta_parquet.exists():
+            meta = pd.read_parquet(meta_parquet)
+        else:
+            raise FileNotFoundError(
+                f"No patch_meta.csv or patch_meta.parquet found in {patches_root}"
+            )
+
+    # Filter to patches matching current imagery config (bands, date_range, etc.)
+    if "imagery_config_hash" in meta.columns:
+        current_hash = imagery_config_hash(cfg.patches)
+        meta = meta[meta["imagery_config_hash"] == current_hash].reset_index(drop=True)
+        if len(meta) == 0:
+            raise FileNotFoundError(
+                f"No patches with imagery_config_hash={current_hash} in {patches_root}. "
+                "Re-run patch extraction with the current config."
+            )
+        log.info("Filtered to %d patches matching imagery_config_hash=%s", len(meta), current_hash)
+
+    candidates = _load_candidates_csv(cfg.data.candidates_dir, cfg.data.countries)
+    if len(candidates) == 0:
+        cand_parquet = output_dir / "candidates.parquet"
+        if cand_parquet.exists():
+            candidates = pd.read_parquet(cand_parquet)
+        else:
+            raise FileNotFoundError(
+                f"No candidates found in {cfg.data.candidates_dir} or {cand_parquet}"
+            )
 
     label_map = dict(zip(
         candidates["id"].astype(str),
@@ -277,8 +336,10 @@ def build_splits(
         meta["_label"].mean(),
     )
 
+    n_spectral = len(cfg.patches.bands)
+
     return (
-        PatchDataset(meta_clean.iloc[train_idx], candidates, patches_dir, augment=True, rng_seed=cfg.training.seed),
-        PatchDataset(meta_clean.iloc[val_idx], candidates, patches_dir, augment=False, rng_seed=cfg.training.seed),
-        PatchDataset(meta_clean.iloc[test_idx], candidates, patches_dir, augment=False, rng_seed=cfg.training.seed),
+        PatchDataset(meta_clean.iloc[train_idx], candidates, patches_root, augment=True, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral),
+        PatchDataset(meta_clean.iloc[val_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral),
+        PatchDataset(meta_clean.iloc[test_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral),
     )

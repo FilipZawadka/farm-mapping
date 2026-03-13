@@ -35,8 +35,8 @@ def test_config_loading():
 
 def test_candidates(cfg):
     log.info("=== Step 2: Candidate building (synthetic) ===")
-    patches_dir = Path(cfg.patches.output_dir)
-    patches_dir.mkdir(parents=True, exist_ok=True)
+    candidates_dir = Path(cfg.data.candidates_dir)
+    candidates_dir.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(42)
     n_pos, n_neg = 25, 25
@@ -60,18 +60,26 @@ def test_candidates(cfg):
             "state": "", "region": "thailand",
         })
 
-    from shapely.geometry import Point
-    import geopandas as gpd
-    geometry = [Point(r["lng"], r["lat"]) for r in rows]
-    candidates = gpd.GeoDataFrame(rows, geometry=geometry, crs="EPSG:4326")
-    candidates.to_parquet(patches_dir / "candidates.parquet", index=False)
+    candidates = pd.DataFrame(rows)
+    for country in cfg.data.countries:
+        csv_path = candidates_dir / f"{country}.csv"
+        candidates.to_csv(csv_path, index=False)
     log.info("  Created %d synthetic candidates", len(candidates))
     return candidates
 
 
+def _find_patches_root(output_dir: Path) -> Path:
+    for parent in [output_dir, *output_dir.parents]:
+        if parent.name == "patches":
+            return parent
+    return output_dir.parent
+
+
 def test_patches(cfg, candidates):
     log.info("=== Step 3: Synthetic patch generation ===")
-    patches_dir = Path(cfg.patches.output_dir)
+    output_dir = Path(cfg.patches.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    patches_root = _find_patches_root(output_dir)
     rng = np.random.default_rng(42)
     n_channels = cfg.model.input_channels
     size = cfg.patches.patch_size_px
@@ -79,24 +87,26 @@ def test_patches(cfg, candidates):
     meta_rows = []
     for _, row in candidates.iterrows():
         cid = str(row["id"])
-        arr = rng.standard_normal((n_channels, size, size)).astype(np.float32)
+        arr = rng.uniform(100, 3000, (n_channels, size, size)).astype(np.float32)
         if row["label"] == 1:
-            arr += 0.5
-        patch_path = patches_dir / f"{cid}.npy"
-        np.save(patch_path, arr)
+            arr += 500
+        npy_path = output_dir / f"{cid}.npy"
+        np.save(npy_path, arr)
+        rel_path = npy_path.relative_to(patches_root)
         meta_rows.append({
             "candidate_id": cid,
             "lat": row["lat"],
             "lng": row["lng"],
+            "state": row.get("state", ""),
             "n_channels": n_channels,
             "height": size,
             "width": size,
             "clear_pixel_fraction": 0.95,
-            "patch_path": str(patch_path),
+            "patch_path": str(rel_path),
         })
 
     meta = pd.DataFrame(meta_rows)
-    meta.to_parquet(patches_dir / "patch_meta.parquet", index=False)
+    meta.to_csv(patches_root / "patch_meta.csv", index=False)
     log.info("  Created %d synthetic patches (%d x %d x %d)", len(meta), n_channels, size, size)
     return meta
 

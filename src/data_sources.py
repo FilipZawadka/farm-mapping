@@ -179,3 +179,51 @@ def load_known_farms(
         )
 
     return merge_sources(gdfs)
+
+
+# ---------------------------------------------------------------------------
+# Generate unified all_farms.csv
+# ---------------------------------------------------------------------------
+
+def generate_all_farms_csv(
+    data_dir: Path | str | None = None,
+) -> Path:
+    """Load every source CSV under ``data/farms/`` and write ``data/farms/all_farms.csv``.
+
+    Columns: id, name, lat, lng, country, state, species, category, source
+    """
+    from .config import DATA_DIR, COUNTRIES
+
+    if data_dir is None:
+        data_dir = DATA_DIR
+    data_dir = Path(data_dir)
+
+    frames: list[pd.DataFrame] = []
+
+    for _key, cfg in COUNTRIES.items():
+        if cfg.ft_path is not None:
+            gdf = load_farm_transparency(cfg.ft_path, country=cfg.name)
+            frames.append(gdf.drop(columns=["geometry"], errors="ignore"))
+        if cfg.osm_full_path is not None:
+            gdf = load_osm_farms(cfg.osm_full_path, country=cfg.name)
+            frames.append(gdf.drop(columns=["geometry"], errors="ignore"))
+
+    if not frames:
+        all_farms = pd.DataFrame(
+            columns=["id", "name", "lat", "lng", "species", "category",
+                      "source", "country", "state"]
+        )
+    else:
+        all_farms = pd.concat(frames, ignore_index=True)
+        all_farms = all_farms[["id", "name", "lat", "lng", "species", "category",
+                                "source", "country", "state"]]
+
+    out_path = data_dir / "farms" / "all_farms.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    all_farms.to_csv(out_path, index=False)
+
+    import logging
+    logging.getLogger(__name__).info(
+        "Wrote %d rows to %s", len(all_farms), out_path,
+    )
+    return out_path

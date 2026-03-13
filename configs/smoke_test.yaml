@@ -8,13 +8,14 @@ data:
   train_regions: null
   val_regions: null
   test_regions: null
-  osm_farm_cache_dir: data/osm_farm_finder
+  candidates_dir: data/candidates
+  osm_farm_cache_dir: data/cache/osm_farm_finder
   negative_sampling:
     strategy: random_rural
     ratio: 1.0
     min_distance_m: 2000
     seed: 42
-    osm_cache_dir: data/osm_negatives
+    osm_cache_dir: data/cache/osm_negatives
 
 patches:
   patch_size_px: 32
@@ -24,7 +25,7 @@ patches:
   composite: median
   date_range: ["2023-06-01", "2023-09-01"]
   max_cloud_cover: 20
-  output_dir: data/patches_smoke
+  output_dir: data/patches/smoke
   num_workers: 2
 
 model:

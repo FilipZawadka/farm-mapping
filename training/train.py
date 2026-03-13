@@ -223,7 +223,10 @@ def train(cfg: PipelineConfig) -> Path:
     if cfg.model.freeze_backbone_epochs > 0:
         model.freeze_backbone()
 
-    criterion = nn.CrossEntropyLoss()
+    weights = None
+    if cfg.training.class_weight is not None and len(cfg.training.class_weight) >= 2:
+        weights = torch.tensor(cfg.training.class_weight, dtype=torch.float32).to(device)
+    criterion = nn.CrossEntropyLoss(weight=weights)
     use_amp = cfg.training.mixed_precision and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda") if use_amp else None
 

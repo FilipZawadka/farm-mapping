@@ -204,6 +204,8 @@ class TrainingConfig(BaseModel):
     test_split: float = 0.15
     seed: int = 42
     mixed_precision: bool = True
+    # Class weights [neg, pos] to penalize false positives when model predicts all positive
+    class_weight: Optional[list[float]] = None
 
 
 class MLflowConfig(BaseModel):

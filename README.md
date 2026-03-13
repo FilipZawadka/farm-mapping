@@ -54,36 +54,39 @@ cp .env.example .env
 # Edit .env with your keys (see "Secrets" section below)
 ```
 
-### 2. Generate Training Data
+### 2. Run the Full Pipeline (single command)
+
+```bash
+python -m training.run_pipeline --config configs/chicken_eggs_united_states.yaml
+```
+
+This runs: candidates → patch_extraction → train → inference → visualize. For a quick test with fewer patches:
+
+```bash
+python -m training.run_pipeline --config configs/chicken_eggs_united_states.yaml --max-patches 100
+```
+
+### 3. Or Run Steps Individually
 
 ```bash
 # Build candidate set (positives from Farm Transparency + negatives from OSM)
-python -m training.candidates --config configs/us_egg_farms.yaml
+python -m training.candidates --config configs/chicken_eggs_united_states.yaml
 
 # Extract Sentinel-2 image patches via Earth Engine
-python -m training.patch_extraction --config configs/us_egg_farms.yaml
+python -m training.patch_extraction --config configs/chicken_eggs_united_states.yaml
 
-# For a quick test, limit to 50 patches:
-python -m training.patch_extraction --config configs/us_egg_farms.yaml --max-patches 50
-```
+# Train
+python -m training.train --config configs/chicken_eggs_united_states.yaml
 
-### 3. Train
-
-```bash
-python -m training.train --config configs/us_egg_farms.yaml
+# Inference + visualization
+python -m training.inference --config configs/chicken_eggs_united_states.yaml
+python -m training.visualize --config configs/chicken_eggs_united_states.yaml
 ```
 
 Training logs go to MLflow (`./mlruns`). View them with:
 
 ```bash
 mlflow ui
-```
-
-### 4. Inference + Visualization
-
-```bash
-python -m training.inference --config configs/us_egg_farms.yaml
-python -m training.visualize --config configs/us_egg_farms.yaml
 ```
 
 ## RunPod (Cloud GPU)

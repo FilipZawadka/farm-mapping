@@ -1,7 +1,7 @@
 # ============================================================================
 # US Egg (Layer) Farm Detection — RunPod-ready
 # ============================================================================
-# Train: IA, OH, IN  |  Val: PA  |  Test: TX
+# All 50 states split: ~70% train, ~15% val, ~15% test
 # Positives: Farm Transparency "Farm (eggs)" chicken entries
 # Negatives: OSM non-farm buildings (warehouses, hangars, industrial, etc.)
 
@@ -10,13 +10,63 @@ data:
   species_filter: [Chickens]
   categories_include: ["Farm (eggs)"]
   candidates_dir: data/candidates/chicken_eggs
-  train_regions: [united_states/IA, united_states/OH, united_states/IN]
-  val_regions: [united_states/PA]
-  test_regions: [united_states/TX]
+  train_regions:
+    - united_states/AL
+    - united_states/AK
+    - united_states/AZ
+    - united_states/AR
+    - united_states/CA
+    - united_states/CO
+    - united_states/CT
+    - united_states/DE
+    - united_states/FL
+    - united_states/GA
+    - united_states/HI
+    - united_states/ID
+    - united_states/IL
+    - united_states/IN
+    - united_states/IA
+    - united_states/KS
+    - united_states/KY
+    - united_states/LA
+    - united_states/ME
+    - united_states/MD
+    - united_states/MA
+    - united_states/MI
+    - united_states/MN
+    - united_states/MS
+    - united_states/MO
+    - united_states/MT
+    - united_states/NE
+    - united_states/NV
+    - united_states/NH
+    - united_states/NJ
+    - united_states/NM
+    - united_states/NY
+    - united_states/NC
+    - united_states/ND
+    - united_states/OH
+  val_regions:
+    - united_states/OK
+    - united_states/OR
+    - united_states/PA
+    - united_states/RI
+    - united_states/SC
+    - united_states/SD
+    - united_states/TN
+    - united_states/TX
+  test_regions:
+    - united_states/UT
+    - united_states/VT
+    - united_states/VA
+    - united_states/WA
+    - united_states/WV
+    - united_states/WI
+    - united_states/WY
   osm_farm_cache_dir: data/cache/osm_farm_finder
   negative_sampling:
     strategy: osm_buildings
-    ratio: 1.0
+    ratio: 2.0   # more negatives to reduce false positives
     min_distance_m: 2000
     seed: 42
     osm_tags: [warehouse, industrial, hangar, commercial, retail, barn]
@@ -39,19 +89,20 @@ model:
   pretrained: true
   num_classes: 2
   input_channels: 9
-  freeze_backbone_epochs: 3
+  freeze_backbone_epochs: 5   # longer freeze to avoid overfitting on small data
 
 training:
   epochs: 30
   batch_size: 32
   learning_rate: 0.0001
-  weight_decay: 0.01
+  weight_decay: 0.05   # stronger regularization for small dataset
   scheduler: cosine
   early_stopping_patience: 5
   val_split: 0.15
   test_split: 0.15
   seed: 42
   mixed_precision: true
+  class_weight: [2.0, 1.0]   # penalize false positives (neg misclassified as pos)
 
 mlflow:
   tracking_uri: ./mlruns
@@ -85,4 +136,4 @@ visualization:
   show_true_positives: true
   show_false_positives: true
   show_false_negatives: true
-  show_true_negatives: false
+  show_true_negatives: true

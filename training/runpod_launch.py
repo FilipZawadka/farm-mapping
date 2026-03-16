@@ -56,18 +56,24 @@ def _build_clone_steps(cfg: PipelineConfig) -> list[str]:
 
 
 def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
-    """Startup script for a CPU-only pod: candidates + patch extraction."""
+    """Startup script for a CPU-only pod: candidates generation only.
+
+    Skips venv creation and pip install when the venv already exists on the
+    network volume (e.g. /workspace/farm-venv-cpu pre-installed).
+    """
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     venv = "/workspace/farm-venv-cpu"
     py = f"{venv}/bin/python"
 
     parts = ["set -euxo pipefail"]
     parts.extend(_build_clone_steps(cfg))
-    parts.append(f"[ -d {venv} ] || python -m venv {venv}")
-    parts.append(f"{venv}/bin/pip install --no-cache-dir -r requirements-cpu.txt")
+    # Only create venv + install deps if the venv is not already on the volume
+    parts.append(
+        f"[ -d {venv} ] || (python -m venv {venv}"
+        f" && {venv}/bin/pip install --no-cache-dir -r requirements-cpu.txt)"
+    )
     parts.append(f"{py} -m training.candidates --config configs/{config_name}")
-    parts.append(f"{py} -m training.patch_extraction --config configs/{config_name}")
-    parts.append(f"echo '=== data prep finished, patches in {code_dir}/data/ ==='")
+    parts.append(f"echo '=== candidates finished, output in {code_dir}/data/ ==='")
     return " && ".join(parts)
 
 

@@ -1,0 +1,86 @@
+# ============================================================================
+# All Farm Transparency Maps Countries — Candidate Generation (CPU pod)
+# ============================================================================
+# Runs: python -m training.candidates --config configs/all_countries_candidates.yaml
+# Launch: python -m training.runpod_launch --config configs/all_countries_candidates.yaml --prep
+#
+# Countries with Farm Transparency Maps data: thailand, united_states,
+# united_kingdom, australia.
+#
+# Assumes farm-venv-cpu is already present on the network volume at
+# /workspace/farm-venv-cpu — no package installation needed.
+
+data:
+  countries: [thailand, united_states, united_kingdom, australia]
+  species_filter: [Chickens, Pigs, Turkeys, Ducks, Cattle]
+  categories_include: [Farm, "Farm (meat)", "Farm (eggs)", "Farm (dairy)"]
+  candidates_dir: data/candidates/all_countries
+  osm_farm_cache_dir: data/cache/osm_farm_finder
+  negative_sampling:
+    strategy: random_rural
+    ratio: 1.0
+    min_distance_m: 2000
+    seed: 42
+    osm_cache_dir: data/cache/osm_negatives
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches/all_countries
+  num_workers: 4
+
+model:
+  architecture: resnet50
+  hub_name: microsoft/resnet-50
+  pretrained: true
+  num_classes: 2
+  input_channels: 9
+  freeze_backbone_epochs: 3
+
+training:
+  epochs: 30
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 5
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+
+mlflow:
+  tracking_uri: ./mlruns
+  experiment_name: all_countries_candidates_v1
+  log_model: true
+
+runpod:
+  # CPU-only pod — general purpose base image
+  gpu_type: "NVIDIA GeForce RTX 4090"
+  docker_image: runpod/base:1.0.2-ubuntu2404
+  volume_mount: /workspace
+  code_dir: /workspace/farm-mapping
+  github_repo: ""   # code already on network volume, no clone needed
+  github_branch: main
+  api_key_env: RUNPOD_API_KEY
+  network_volume_id: r8nyom4e4e
+
+inference:
+  checkpoint: output/best_model.pt
+  threshold: 0.5
+  confidence_tiers:
+    high: 0.8
+    medium: 0.5
+    low: 0.3
+
+visualization:
+  output_dir: output/maps_all_countries
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: false

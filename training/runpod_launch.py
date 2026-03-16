@@ -177,27 +177,12 @@ def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -
     volume_mount = cfg.runpod.volume_mount
     network_volume_id = _network_volume_id(cfg)
     cloud_type = getattr(cfg.runpod, "cloud_type", "ALL")
-    code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
-    venv = "/workspace/farm-venv"
-    py = f"{venv}/bin/python"
-
-    # Build a simple docker_args command that runs the full pipeline.
-    # Candidates and patches are already on the network volume — skip them.
-    pipeline_cmd = (
-        f"cd {code_dir}"
-        f" && {py} -u -m training.run_pipeline"
-        f" --config configs/{config_name}"
-        f" --skip candidates patch_extraction"
-    )
-    docker_args = f"/bin/bash -lc '{pipeline_cmd}'"
-
     kwargs: dict = {
         "name": f"farm-train-{config_name.removesuffix('.yaml')}",
         "image_name": cfg.runpod.docker_image,
         "gpu_type_id": gpu_type,
         "container_disk_in_gb": 20,
         "volume_mount_path": volume_mount,
-        "docker_args": docker_args,
         "ports": "22/tcp",
         "support_public_ip": True,
         "env": {},

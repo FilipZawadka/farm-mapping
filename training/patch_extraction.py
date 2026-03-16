@@ -98,6 +98,7 @@ def _extract_one_patch(
     lat: float,
     lng: float,
     state: str,
+    country: str,
     patch_cfg: PatchConfig,
     sources: list[ResolvedSource],
     output_dir: Path,
@@ -133,12 +134,13 @@ def _extract_one_patch(
         stacked = np.concatenate(arrays, axis=0).astype(np.float32)
         nan_frac = np.isnan(stacked).sum() / max(stacked.size, 1)
 
-        state_part = state if state else "all"
-        state_dir = output_dir / state_part / imagery_hash
-        state_dir.mkdir(parents=True, exist_ok=True)
+        state_part = state if state else "_"
+        country_part = country if country else "_"
+        patch_dir = output_dir / country_part / state_part / imagery_hash
+        patch_dir.mkdir(parents=True, exist_ok=True)
 
         filename = f"{candidate_id}.npy"
-        out_path = state_dir / filename
+        out_path = patch_dir / filename
         np.save(out_path, stacked)
 
         rel_path = out_path.relative_to(patches_root)
@@ -199,6 +201,7 @@ def _extract_sequential(
             float(row["lat"]),
             float(row["lng"]),
             str(row.get("state", "")),
+            str(row.get("country", "")),
             patch_cfg,
             sources,
             output_dir,
@@ -238,6 +241,7 @@ def _extract_parallel(
                 float(row["lat"]),
                 float(row["lng"]),
                 str(row.get("state", "")),
+                str(row.get("country", "")),
                 patch_cfg,
                 sources,
                 output_dir,

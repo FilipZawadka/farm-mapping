@@ -31,7 +31,7 @@ patches:
   composite: median
   date_range: ["2023-01-01", "2023-12-31"]
   max_cloud_cover: 15
-  output_dir: data/patches/all_countries
+  output_dir: data/patches
   num_workers: 4
 
 model:

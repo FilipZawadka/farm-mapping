@@ -195,21 +195,48 @@ def _metrics_panel_js(scored: gpd.GeoDataFrame) -> str:
     )
 
 
+def _build_split_layer_js(split_name: str, subset: gpd.GeoDataFrame, n: int) -> str:
+    """Build a single split layer where each point is colored by its pred_class."""
+    features = _gdf_to_features(subset)
+    fc = {"type": "FeatureCollection", "features": features}
+    fc_json = json.dumps(fc)
+    colors_json = json.dumps(PRED_COLORS)
+    safe = split_name.replace("'", "\\'")
+    return f"""
+    (function() {{
+        var predColors = {colors_json};
+        var layer = L.geoJSON({fc_json}, {{
+            pointToLayer: function(f, ll) {{
+                var c = predColors[f.properties.pred_class] || '#999';
+                return L.circleMarker(ll, {{radius: 6, fillColor: c, color: c,
+                                            weight: 2, fillOpacity: 0.7}});
+            }},
+            onEachFeature: function(f, layer) {{
+                var p = f.properties, html = '<b>' + (p.pred_class||'') + '</b> ({safe})<br>';
+                if(p.predicted_score != null) html += 'Score: ' + p.predicted_score.toFixed(3) + '<br>';
+                if(p.confidence_tier) html += 'Confidence: ' + p.confidence_tier + '<br>';
+                if(p.candidate_id) html += 'ID: ' + p.candidate_id + '<br>';
+                if(p.country) html += 'Country: ' + p.country + '<br>';
+                if(p.source) html += 'Source: ' + p.source + '<br>';
+                layer.bindPopup(html);
+            }}
+        }}).addTo(map);
+        overlays['{safe} ({n})'] = layer;
+    }})();
+"""
+
+
 def _build_split_layers(scored: gpd.GeoDataFrame):
-    """Build separate layers for train/val/test splits."""
+    """Build toggleable layers for train/val/test, points colored by pred_class."""
     if "split" not in scored.columns:
-        return "", ""
+        return ""
     layers_js = ""
-    legend_html = ""
     for split in ("train", "val", "test"):
         subset = scored[scored["split"] == split]
         if len(subset) == 0:
             continue
-        color = SPLIT_COLORS[split]
-        features = _gdf_to_features(subset)
-        layers_js += _build_layer_js(f"{split} ({len(subset)})", features, color)
-        legend_html += _legend_item(f"{split}", color, len(features))
-    return layers_js, legend_html
+        layers_js += _build_split_layer_js(split, subset, len(subset))
+    return layers_js
 
 
 def generate_prediction_map(
@@ -219,10 +246,17 @@ def generate_prediction_map(
 ) -> str:
     """Generate an interactive Leaflet HTML map coloured by prediction outcome."""
     scored = _classify_predictions(scored)
-    layers_js, legend_html = _build_pred_layers(scored, viz_cfg)
-    split_layers_js, split_legend_html = _build_split_layers(scored)
-    layers_js += split_layers_js
-    legend_html += '<hr style="margin:4px 0">' + split_legend_html if split_legend_html else ""
+
+    # Split layers: train/val/test toggleable, each point colored by TP/FP/FN/TN
+    layers_js = _build_split_layers(scored)
+
+    # Legend shows prediction class colors (not split colors)
+    legend_html = ""
+    for pred_class in ("TP", "FP", "FN", "TN"):
+        n = int((scored["pred_class"] == pred_class).sum())
+        if n > 0:
+            legend_html += _legend_item(pred_class, PRED_COLORS[pred_class], n)
+
     layers_js += _metrics_panel_js(scored)
 
     center_lat = float(scored["lat"].mean()) if len(scored) > 0 else 15.0

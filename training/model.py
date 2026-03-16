@@ -187,8 +187,30 @@ def build_generic(cfg: ModelConfig) -> FarmDetector:
     return _build_from_hub(cfg)
 
 
+def build_torchgeo_resnet(cfg: ModelConfig) -> FarmDetector:
+    """Load a ResNet50 with torchgeo pretrained weights (e.g. Satlas, SSL4EO)."""
+    import torchgeo.models
+    import torchvision.models as tv_models
+
+    weights_name = cfg.hub_name  # e.g. "SENTINEL2_SI_MS_SATLAS"
+    weights_enum = getattr(torchgeo.models.ResNet50_Weights, weights_name)
+    backbone = torchgeo.models.resnet50(weights=weights_enum)
+
+    # torchgeo returns a torchvision ResNet — adapt channels if needed
+    pretrained_channels = backbone.conv1.in_channels
+    if cfg.input_channels != pretrained_channels:
+        _adapt_first_conv(backbone, cfg.input_channels)
+        log.info("Adapted first conv: %d -> %d input channels", pretrained_channels, cfg.input_channels)
+
+    backbone.fc = nn.Linear(backbone.fc.in_features, cfg.num_classes)
+
+    return FarmDetector(backbone, cfg.num_classes)
+
+
 MODEL_BUILDERS: dict[str, callable] = {
     "resnet50": build_resnet,
+    "resnet50_satlas": build_torchgeo_resnet,
+    "resnet50_ssl4eo": build_torchgeo_resnet,
     "vit_small": build_vit,
     "vit_base": build_vit,
     "prithvi_eo": build_generic,

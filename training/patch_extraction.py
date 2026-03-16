@@ -281,6 +281,20 @@ def extract_patches(
     band_names = [b for s in sources for b in s.band_names()]
     imagery_meta = imagery_metadata(patch_cfg, band_names)
 
+    # Skip candidates already present in patch_meta.csv (resume support)
+    meta_path = patches_root / "patch_meta.csv"
+    if meta_path.exists():
+        done_ids = set(pd.read_csv(meta_path, usecols=["candidate_id"])["candidate_id"].astype(str))
+        before = len(candidates)
+        candidates = candidates[~candidates["id"].astype(str).isin(done_ids)]
+        skipped = before - len(candidates)
+        if skipped:
+            log.info("Skipping %d already-extracted patches, %d remaining.", skipped, len(candidates))
+
+    if len(candidates) == 0:
+        log.info("All patches already extracted.")
+        return pd.read_csv(meta_path)
+
     log.info(
         "Extracting %d patches (workers=%d, sources=%d, imagery_hash=%s) ...",
         len(candidates),

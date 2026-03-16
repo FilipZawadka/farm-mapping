@@ -367,7 +367,7 @@ def main() -> None:
     parser.add_argument("--config", default="configs/default.yaml")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S")
 
     cfg = resolve_paths(load_config(args.config))
     candidates = build_candidates(cfg)

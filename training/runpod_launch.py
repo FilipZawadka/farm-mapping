@@ -55,6 +55,17 @@ def _build_clone_steps(cfg: PipelineConfig) -> list[str]:
     return parts
 
 
+_LOAD_RUNPOD_ENV = (
+    "while IFS= read -r -d $'\\0' _v; do"
+    " case \"$_v\" in GEE_*|RUNPOD_*|GOOGLE_*) export \"$_v\" ;; esac;"
+    " done < /proc/1/environ"
+)
+"""One-liner that exports RunPod secrets from the init process into the current shell.
+
+Needed because tmux sessions don't inherit env vars set by the RunPod container runtime.
+"""
+
+
 def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
     """Startup script for a CPU-only pod: candidates generation only.
 
@@ -67,9 +78,8 @@ def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
 
     parts = [
         "set -euxo pipefail",
+        _LOAD_RUNPOD_ENV,
         f"cd {code_dir}",
-        # timestamp every line to /tmp/startup.log
-        "exec > >(awk '{ print strftime(\"[%H:%M:%S]\"), $0; fflush() }' | tee /tmp/startup.log) 2>&1",
         f"echo '=== pod started, config={config_name} ==='",
     ]
     parts.extend(_build_clone_steps(cfg))
@@ -82,6 +92,46 @@ def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
     parts.append(f"echo '=== running candidates ==='")
     parts.append(f"{py} -u -m training.candidates --config configs/{config_name}")
     parts.append(f"echo '=== DONE: candidates saved to {code_dir}/data/candidates/ ==='")
+    if getattr(cfg.runpod, "auto_terminate", True):
+        parts.append(
+            f"{py} -c \"import runpod, os; runpod.api_key=os.environ['RUNPOD_API_KEY'];"
+            f" runpod.terminate_pod(os.environ['RUNPOD_POD_ID']);"
+            f" print('=== pod self-terminating ===')\""
+        )
+    return " && ".join(parts)
+
+
+def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
+    """Startup script for a CPU-only pod: patch extraction only.
+
+    Assumes candidates CSVs already exist on the network volume.
+    """
+    code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
+    venv = "/workspace/farm-venv-cpu"
+    py = f"{venv}/bin/python"
+
+    parts = [
+        "set -euxo pipefail",
+        _LOAD_RUNPOD_ENV,
+        f"cd {code_dir}",
+        f"echo '=== pod started (patch extraction), config={config_name} ==='",
+    ]
+    parts.extend(_build_clone_steps(cfg))
+    parts.append(
+        f"[ -d {venv} ]"
+        f" && echo 'farm-venv-cpu found, skipping install'"
+        f" || (echo 'farm-venv-cpu not found, installing...' && python -m venv {venv}"
+        f" && {venv}/bin/pip install --no-cache-dir -r requirements-cpu.txt)"
+    )
+    parts.append(f"echo '=== running patch extraction ==='")
+    parts.append(f"{py} -u -m training.patch_extraction --config configs/{config_name}")
+    parts.append(f"echo '=== DONE: patches saved to {code_dir}/data/patches/ ==='")
+    if getattr(cfg.runpod, "auto_terminate", True):
+        parts.append(
+            f"{py} -c \"import runpod, os; runpod.api_key=os.environ['RUNPOD_API_KEY'];"
+            f" runpod.terminate_pod(os.environ['RUNPOD_POD_ID']);"
+            f" print('=== pod self-terminating ===')\""
+        )
     return " && ".join(parts)
 
 
@@ -165,7 +215,7 @@ def _build_prep_kwargs(cfg: PipelineConfig, config_name: str, instance_id: str) 
     network_volume_id = _network_volume_id(cfg)
 
     kwargs: dict = {
-        "name": "farm-data-prep",
+        "name": f"farm-prep-{config_name.removesuffix('.yaml')}",
         "image_name": _CPU_IMAGE,
         "gpu_count": 0,
         "instance_id": instance_id,
@@ -176,7 +226,7 @@ def _build_prep_kwargs(cfg: PipelineConfig, config_name: str, instance_id: str) 
         "docker_args": _DOCKER_ARGS,
         "env": {
             **_RUNPOD_SECRETS_ENV,
-            "STARTUP_SCRIPT": _build_prep_script(cfg, config_name),
+            "RUNPOD_API_KEY": _get_api_key(cfg.runpod),
         },
     }
     if network_volume_id:
@@ -215,19 +265,20 @@ def _wait_for_ssh(pod_id: str, runpod, timeout: int = 120) -> tuple[str, int]:
 
 def _ssh_run_startup(host: str, port: int, script: str) -> None:
     """SSH into the pod and run the startup script inside a detached tmux session."""
-    import subprocess
-    # Wrap in tmux: session named 'prep', output also tee'd to /tmp/startup.log
-    tmux_cmd = f"tmux new-session -d -s prep 'bash -c {script!r}'"
-    ssh_cmd = [
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "ConnectTimeout=10",
-        "-p", str(port),
-        f"root@{host}",
-        tmux_cmd,
+    import subprocess, base64
+    remote_script = "/tmp/prep_startup.sh"
+    # Encode as base64 to avoid all quoting/escaping issues over SSH
+    script_b64 = base64.b64encode(script.encode()).decode()
+    write_cmd = f"echo '{script_b64}' | base64 -d > {remote_script} && chmod +x {remote_script}"
+    run_cmd = f"tmux new-session -d -s prep 'bash {remote_script} 2>&1 | tee /tmp/startup.log'"
+
+    ssh_base = [
+        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+        "-p", str(port), f"root@{host}",
     ]
-    log.info("Starting script on pod via SSH (%s:%d) ...", host, port)
-    subprocess.run(ssh_cmd, check=True)
+    log.info("Uploading startup script to pod (%s:%d) ...", host, port)
+    subprocess.run(ssh_base + [write_cmd], check=True)
+    subprocess.run(ssh_base + [run_cmd], check=True)
     log.info(
         "Script running in tmux session 'prep'.\n"
         "  Attach : ssh root@%s -p %d  →  tmux attach -t prep\n"
@@ -268,6 +319,46 @@ def launch_prep_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml")
     host, port = _wait_for_ssh(pod_id, runpod)
     _ssh_run_startup(host, port, startup_script)
     log.info("To watch live:  ssh root@%s -p %d -t 'tmux attach -t prep'", host, port)
+    return pod
+
+
+def launch_patch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml") -> dict:
+    """Launch a CPU-only pod that runs patch extraction.
+
+    Assumes candidate CSVs already exist on the network volume.
+    """
+    runpod = _init_runpod(cfg)
+
+    cpu_candidates = [cfg.runpod.cpu_instance_id] + list(cfg.runpod.cpu_fallbacks)
+
+    last_error = None
+    for instance_id in cpu_candidates:
+        log.info("Trying CPU instance %r (image=%s) ...", instance_id, _CPU_IMAGE)
+        try:
+            kwargs = _build_prep_kwargs(cfg, config_name, instance_id)
+            kwargs["name"] = f"farm-patches-{config_name.removesuffix('.yaml')}"
+            pod = runpod.create_pod(**kwargs)
+            log.info("Patch pod created: id=%s instance=%r", pod.get("id"), instance_id)
+            break
+        except runpod.error.QueryError as exc:
+            log.warning("CPU instance %r unavailable: %s", instance_id, exc)
+            last_error = exc
+    else:
+        raise RuntimeError(
+            f"No CPU instances available. Tried: {cpu_candidates}"
+        ) from last_error
+
+    pod_id = pod["id"]
+    startup_script = _build_patch_script(cfg, config_name)
+    log.info("Waiting for SSH on pod %s ...", pod_id)
+    host, port = _wait_for_ssh(pod_id, runpod)
+    _ssh_run_startup(host, port, startup_script)
+    log.info(
+        "Script running in tmux session 'prep'.\n"
+        "  Attach : ssh root@%s -p %d  ->  tmux attach -t prep\n"
+        "  Logs   : /tmp/startup.log",
+        host, port,
+    )
     return pod
 
 
@@ -337,18 +428,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Launch training on RunPod")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--wait", action="store_true", help="Wait for pod to finish")
-    parser.add_argument(
-        "--prep-only", action="store_true",
-        help="Launch a cheap CPU pod that only generates candidates + patches",
-    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--prep", action="store_true",
+        help="CPU pod: generate candidates only")
+    mode.add_argument("--patches", action="store_true",
+        help="CPU pod: run patch extraction (candidates must already exist)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = resolve_paths(load_config(args.config))
     config_name = os.path.basename(args.config)
 
-    if args.prep_only:
+    if args.prep:
         pod = launch_prep_pod(cfg, config_name=config_name)
+    elif args.patches:
+        pod = launch_patch_pod(cfg, config_name=config_name)
     else:
         pod = launch_pod(cfg, config_name=config_name)
 

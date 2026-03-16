@@ -227,6 +227,7 @@ class RunPodConfig(BaseModel):
     network_volume_id: Optional[str] = None
     cpu_instance_id: str = "cpu3g-4-16"
     cpu_fallbacks: list[str] = []
+    auto_terminate: bool = True
 
 
 class CacheLocalConfig(BaseModel):

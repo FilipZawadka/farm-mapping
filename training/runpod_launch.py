@@ -163,6 +163,11 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
         "fi"
     )
     parts.append(f"{py} -m training.train --config configs/{config_name}")
+    parts.append(f"echo '=== running inference ==='")
+    parts.append(f"{py} -m training.inference --config configs/{config_name}")
+    parts.append(f"echo '=== generating prediction map ==='")
+    parts.append(f"{py} -m training.visualize --config configs/{config_name}")
+    parts.append(f"echo '=== DONE: training + inference + visualization complete ==='")
     return " && ".join(parts)
 
 
@@ -209,6 +214,7 @@ def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -
     return kwargs
 
 
+
 def _build_prep_kwargs(cfg: PipelineConfig, config_name: str, instance_id: str) -> dict:
     """Build the kwargs dict for a CPU-only data-prep pod."""
     volume_mount = cfg.runpod.volume_mount
@@ -226,7 +232,6 @@ def _build_prep_kwargs(cfg: PipelineConfig, config_name: str, instance_id: str) 
         "docker_args": _DOCKER_ARGS,
         "env": {
             **_RUNPOD_SECRETS_ENV,
-            "RUNPOD_API_KEY": _get_api_key(cfg.runpod),
         },
     }
     if network_volume_id:
@@ -281,7 +286,7 @@ def _ssh_run_startup(host: str, port: int, script: str) -> None:
     subprocess.run(ssh_base + [run_cmd], check=True)
     log.info(
         "Script running in tmux session 'prep'.\n"
-        "  Attach : ssh root@%s -p %d  →  tmux attach -t prep\n"
+        "  Attach : ssh -t root@%s -p %d 'tmux attach -t prep'\n"
         "  Logs   : /tmp/startup.log",
         host, port,
     )
@@ -318,7 +323,7 @@ def launch_prep_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml")
     log.info("Waiting for SSH on pod %s ...", pod_id)
     host, port = _wait_for_ssh(pod_id, runpod)
     _ssh_run_startup(host, port, startup_script)
-    log.info("To watch live:  ssh root@%s -p %d -t 'tmux attach -t prep'", host, port)
+    log.info("To watch live:  ssh -t root@%s -p %d 'tmux attach -t prep'", host, port)
     return pod
 
 
@@ -355,7 +360,7 @@ def launch_patch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml"
     _ssh_run_startup(host, port, startup_script)
     log.info(
         "Script running in tmux session 'prep'.\n"
-        "  Attach : ssh root@%s -p %d  ->  tmux attach -t prep\n"
+        "  Attach : ssh -t root@%s -p %d 'tmux attach -t prep'\n"
         "  Logs   : /tmp/startup.log",
         host, port,
     )

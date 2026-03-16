@@ -30,6 +30,12 @@ PRED_COLORS = {
     "TN": "#95a5a6",
 }
 
+SPLIT_COLORS = {
+    "train": "#3498db",
+    "val": "#9b59b6",
+    "test": "#e67e22",
+}
+
 
 def _classify_predictions(scored: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Add a ``pred_class`` column: TP, FP, FN, TN."""
@@ -55,7 +61,39 @@ def _confusion_counts(scored: gpd.GeoDataFrame) -> dict[str, int]:
     return {k: counts.get(k, 0) for k in ("TP", "FP", "FN", "TN")}
 
 
-def _metrics_html(counts: dict[str, int], per_country: dict) -> str:
+def _split_metrics_html(scored: gpd.GeoDataFrame) -> str:
+    """Build per-split (train/val/test) metrics rows."""
+    if "split" not in scored.columns:
+        return ""
+    rows = ""
+    for split in ("train", "val", "test"):
+        subset = scored[scored["split"] == split]
+        if len(subset) == 0:
+            continue
+        counts = subset["pred_class"].value_counts().to_dict()
+        tp, fp, fn, tn = counts.get("TP", 0), counts.get("FP", 0), counts.get("FN", 0), counts.get("TN", 0)
+        prec = tp / max(tp + fp, 1)
+        rec = tp / max(tp + fn, 1)
+        f1 = 2 * prec * rec / max(prec + rec, 1e-8)
+        color = SPLIT_COLORS.get(split, "#333")
+        rows += (
+            f'<tr><td style="color:{color};font-weight:bold">{split}</td>'
+            f"<td>{prec:.2f}</td><td>{rec:.2f}</td><td>{f1:.2f}</td>"
+            f"<td>{tp}</td><td>{fp}</td><td>{fn}</td><td>{tn}</td>"
+            f"<td>{len(subset)}</td></tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        "<br><b>Per-Split</b>"
+        '<table style="width:100%;border-collapse:collapse;margin-top:5px;">'
+        "<tr><th>Split</th><th>Prec</th><th>Rec</th><th>F1</th>"
+        "<th>TP</th><th>FP</th><th>FN</th><th>TN</th><th>N</th></tr>"
+        f"{rows}</table>"
+    )
+
+
+def _metrics_html(counts: dict[str, int], per_country: dict, scored: gpd.GeoDataFrame | None = None) -> str:
     """Build an HTML table summarising prediction quality."""
     tp, fp, fn, tn = counts["TP"], counts["FP"], counts["FN"], counts["TN"]
     precision = tp / max(tp + fp, 1)
@@ -84,12 +122,15 @@ def _metrics_html(counts: dict[str, int], per_country: dict) -> str:
             f"<td>{c_tp}</td><td>{c_fp}</td><td>{c_fn}</td></tr>"
         )
 
+    split_html = _split_metrics_html(scored) if scored is not None else ""
+
     return (
         '<div style="background:white;padding:10px;margin:5px;border-radius:5px;'
-        'border:1px solid #999;font:12px/1.4 sans-serif;max-width:350px;">'
+        'border:1px solid #999;font:12px/1.4 sans-serif;max-width:450px;max-height:80vh;overflow-y:auto;">'
         "<b>Overall Metrics</b>"
         '<table style="width:100%;border-collapse:collapse;margin-top:5px;">'
         f"{rows}</table>"
+        f"{split_html}"
         "<br><b>Per-Country</b>"
         '<table style="width:100%;border-collapse:collapse;margin-top:5px;">'
         "<tr><th>Country</th><th>Prec</th><th>Rec</th><th>TP</th><th>FP</th><th>FN</th></tr>"
@@ -142,7 +183,7 @@ def _per_country_counts(scored: gpd.GeoDataFrame) -> dict[str, dict]:
 def _metrics_panel_js(scored: gpd.GeoDataFrame) -> str:
     counts = _confusion_counts(scored)
     per_country = _per_country_counts(scored)
-    metrics_div = _metrics_html(counts, per_country)
+    metrics_div = _metrics_html(counts, per_country, scored)
     return (
         "var metricsCtrl = L.control({position: 'bottomleft'});\n"
         "metricsCtrl.onAdd = function() {\n"
@@ -154,6 +195,23 @@ def _metrics_panel_js(scored: gpd.GeoDataFrame) -> str:
     )
 
 
+def _build_split_layers(scored: gpd.GeoDataFrame):
+    """Build separate layers for train/val/test splits."""
+    if "split" not in scored.columns:
+        return "", ""
+    layers_js = ""
+    legend_html = ""
+    for split in ("train", "val", "test"):
+        subset = scored[scored["split"] == split]
+        if len(subset) == 0:
+            continue
+        color = SPLIT_COLORS[split]
+        features = _gdf_to_features(subset)
+        layers_js += _build_layer_js(f"{split} ({len(subset)})", features, color)
+        legend_html += _legend_item(f"{split}", color, len(features))
+    return layers_js, legend_html
+
+
 def generate_prediction_map(
     scored: gpd.GeoDataFrame,
     viz_cfg: VizConfig,
@@ -162,6 +220,9 @@ def generate_prediction_map(
     """Generate an interactive Leaflet HTML map coloured by prediction outcome."""
     scored = _classify_predictions(scored)
     layers_js, legend_html = _build_pred_layers(scored, viz_cfg)
+    split_layers_js, split_legend_html = _build_split_layers(scored)
+    layers_js += split_layers_js
+    legend_html += '<hr style="margin:4px 0">' + split_legend_html if split_legend_html else ""
     layers_js += _metrics_panel_js(scored)
 
     center_lat = float(scored["lat"].mean()) if len(scored) > 0 else 15.0

@@ -180,9 +180,17 @@ def _run_epoch_loop(ctx: _TrainCtx, train_loader, val_loader):
         v_loss, vm = _evaluate(ctx.model, val_loader, ctx.criterion, ctx.device)
         _step_scheduler(scheduler, ctx.cfg, v_loss)
 
-        mlflow.log_metrics({"train_loss": t_loss, "val_loss": v_loss,
-                            "val_f1": vm["f1"], "lr": optimizer.param_groups[0]["lr"]}, step=epoch)
-        log.info("Epoch %d/%d  loss=%.4f  val=%.4f  f1=%.4f", epoch, ctx.cfg.training.epochs, t_loss, v_loss, vm["f1"])
+        mlflow.log_metrics({
+            "train_loss": t_loss, "val_loss": v_loss,
+            "val_f1": vm["f1"], "val_precision": vm["precision"],
+            "val_recall": vm["recall"], "val_accuracy": vm["accuracy"],
+            "lr": optimizer.param_groups[0]["lr"],
+        }, step=epoch)
+        log.info(
+            "Epoch %d/%d  loss=%.4f  val=%.4f  f1=%.4f  prec=%.4f  rec=%.4f",
+            epoch, ctx.cfg.training.epochs, t_loss, v_loss,
+            vm["f1"], vm["precision"], vm["recall"],
+        )
 
         if v_loss < best_val_loss:
             best_val_loss, patience = v_loss, 0

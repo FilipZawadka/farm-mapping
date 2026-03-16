@@ -140,6 +140,16 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     result["confidence_tier"] = _assign_confidence(scores_arr, cfg)
     _attach_labels(result, candidates)
 
+    # Attach split assignments if available
+    splits_path = patches_root / "split_assignments.csv"
+    if splits_path.exists():
+        splits = pd.read_csv(splits_path)
+        split_map = dict(zip(splits["candidate_id"].astype(str), splits["split"]))
+        result["split"] = result["candidate_id"].astype(str).map(split_map).fillna("unknown")
+        log.info("Attached split assignments (train/val/test) from %s", splits_path)
+    else:
+        result["split"] = "unknown"
+
     geometry = [Point(lng, lat) for lng, lat in zip(result["lng"], result["lat"])]
     scored_gdf = gpd.GeoDataFrame(result, geometry=geometry, crs="EPSG:4326")
 

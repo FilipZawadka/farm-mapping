@@ -92,21 +92,21 @@ model:
   freeze_backbone_epochs: 5   # longer freeze to avoid overfitting on small data
 
 training:
-  epochs: 30
-  batch_size: 32
-  learning_rate: 0.0001
-  weight_decay: 0.05   # stronger regularization for small dataset
+  epochs: 50
+  batch_size: 16          # smaller batches = more gradient updates per epoch
+  learning_rate: 0.00005  # lower LR for more stable fine-tuning
+  weight_decay: 0.01      # less aggressive regularization
   scheduler: cosine
-  early_stopping_patience: 5
+  early_stopping_patience: 10  # more patience — val_f1 was still climbing at epoch 30
   val_split: 0.15
   test_split: 0.15
   seed: 42
   mixed_precision: true
-  class_weight: [2.0, 1.0]   # penalize false positives (neg misclassified as pos)
+  class_weight: [1.0, 2.0]  # penalize missed farms (FN) — recall was only 45%
 
 mlflow:
   tracking_uri: ./mlruns
-  experiment_name: chicken_eggs_united_states_v1
+  experiment_name: chicken_eggs_united_states_v2
   log_model: true
 
 runpod:
@@ -122,6 +122,7 @@ runpod:
   github_repo: https://github.com/FilipZawadka/farm-mapping.git
   github_branch: main
   api_key_env: RUNPOD_API_KEY
+  network_volume_id: r8nyom4e4e
 
 inference:
   checkpoint: output/best_model.pt

@@ -166,6 +166,20 @@ def _extract_one_patch(
         return None
 
 
+_FLUSH_EVERY = 1000  # flush patch_meta.csv every N successful patches
+
+
+def _flush_meta(rows: list[dict], patches_root: Path) -> list[dict]:
+    """Append *rows* to ``patch_meta.csv`` and return an empty list."""
+    if not rows:
+        return rows
+    meta_path = patches_root / "patch_meta.csv"
+    write_header = not meta_path.exists()
+    pd.DataFrame(rows).to_csv(meta_path, mode="a", header=write_header, index=False)
+    log.info("Checkpoint: flushed %d rows to %s", len(rows), meta_path)
+    return []
+
+
 def _extract_sequential(
     candidates: pd.DataFrame,
     patch_cfg: PatchConfig,
@@ -198,6 +212,8 @@ def _extract_sequential(
             rows.append(meta)
         if (i + 1) % 10 == 0:
             log.info("  %d / %d patches extracted", i + 1, total)
+        if len(rows) >= _FLUSH_EVERY:
+            rows = _flush_meta(rows, patches_root)
     return rows
 
 
@@ -241,6 +257,8 @@ def _extract_parallel(
             done += 1
             if done % 10 == 0:
                 log.info("  %d / %d patches extracted", done, total)
+            if len(rows) >= _FLUSH_EVERY:
+                rows = _flush_meta(rows, patches_root)
     return rows
 
 
@@ -314,14 +332,11 @@ def extract_patches(
             imagery_hash, imagery_meta,
         )
 
-    meta_df = pd.DataFrame(rows)
-    if len(meta_df) > 0:
-        meta_path = patches_root / "patch_meta.csv"
-        write_header = not meta_path.exists()
-        meta_df.to_csv(meta_path, mode="a", header=write_header, index=False)
-        log.info("Appended %d rows to %s", len(meta_df), meta_path)
+    # Flush any remaining rows not yet written by incremental checkpoints
+    _flush_meta(rows, patches_root)
 
-    return meta_df
+    meta_path = patches_root / "patch_meta.csv"
+    return pd.read_csv(meta_path) if meta_path.exists() else pd.DataFrame()
 
 
 def _load_candidates_csv(candidates_dir: str, countries: list[str]) -> pd.DataFrame:

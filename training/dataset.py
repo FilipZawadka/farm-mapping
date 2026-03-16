@@ -336,6 +336,17 @@ def build_splits(
         meta["_label"].mean(),
     )
 
+    # Persist split assignments so we can colour the map later
+    split_col = pd.Series("unassigned", index=meta_clean.index)
+    split_col.iloc[train_idx] = "train"
+    split_col.iloc[val_idx] = "val"
+    split_col.iloc[test_idx] = "test"
+    splits_df = meta_clean[["candidate_id"]].copy()
+    splits_df["split"] = split_col
+    splits_path = patches_root / "split_assignments.csv"
+    splits_df.to_csv(splits_path, index=False)
+    log.info("Saved split assignments to %s", splits_path)
+
     n_spectral = len(cfg.patches.bands)
 
     return (

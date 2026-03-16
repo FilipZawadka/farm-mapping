@@ -60,8 +60,8 @@ mlflow:
   log_model: true
 
 runpod:
-  # CPU-only pod — general purpose base image
-  gpu_type: "NVIDIA GeForce RTX 4090"
+  # CPU-only pod — no GPU needed for candidate generation
+  gpu_type: ""
   docker_image: runpod/base:1.0.2-ubuntu2404
   volume_mount: /workspace
   code_dir: /workspace/farm-mapping
@@ -69,6 +69,16 @@ runpod:
   github_branch: main
   api_key_env: RUNPOD_API_KEY
   network_volume_id: r8nyom4e4e
+  # Format: {flavor}-{vcpu}-{memoryGb}
+  # cpu3g (General Purpose): cpu3g-2-8, cpu3g-4-16, cpu3g-8-32
+  # cpu3c (Compute-Optimized): cpu3c-4-8, cpu3c-8-16
+  # cpu3m (Memory-Optimized): cpu3m-2-16, cpu3m-4-32
+  cpu_instance_id: "cpu3g-4-16"
+  cpu_fallbacks:
+    - "cpu3g-8-32"
+    - "cpu3c-8-16"
+    - "cpu3m-4-32"
+    - "cpu3g-2-8"
 
 inference:
   checkpoint: output/best_model.pt

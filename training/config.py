@@ -225,6 +225,8 @@ class RunPodConfig(BaseModel):
     github_branch: str = "main"
     api_key_env: str = "RUNPOD_API_KEY"
     network_volume_id: Optional[str] = None
+    cpu_instance_id: str = "cpu3g-4-16"
+    cpu_fallbacks: list[str] = []
 
 
 class CacheLocalConfig(BaseModel):

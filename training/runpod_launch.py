@@ -65,15 +65,23 @@ def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
     venv = "/workspace/farm-venv-cpu"
     py = f"{venv}/bin/python"
 
-    parts = ["set -euxo pipefail"]
+    parts = [
+        "set -euxo pipefail",
+        f"cd {code_dir}",
+        # timestamp every line to /tmp/startup.log
+        "exec > >(awk '{ print strftime(\"[%H:%M:%S]\"), $0; fflush() }' | tee /tmp/startup.log) 2>&1",
+        f"echo '=== pod started, config={config_name} ==='",
+    ]
     parts.extend(_build_clone_steps(cfg))
-    # Only create venv + install deps if the venv is not already on the volume
     parts.append(
-        f"[ -d {venv} ] || (python -m venv {venv}"
+        f"[ -d {venv} ]"
+        f" && echo 'farm-venv-cpu found, skipping install'"
+        f" || (echo 'farm-venv-cpu not found, installing...' && python -m venv {venv}"
         f" && {venv}/bin/pip install --no-cache-dir -r requirements-cpu.txt)"
     )
-    parts.append(f"{py} -m training.candidates --config configs/{config_name}")
-    parts.append(f"echo '=== candidates finished, output in {code_dir}/data/ ==='")
+    parts.append(f"echo '=== running candidates ==='")
+    parts.append(f"{py} -u -m training.candidates --config configs/{config_name}")
+    parts.append(f"echo '=== DONE: candidates saved to {code_dir}/data/candidates/ ==='")
     return " && ".join(parts)
 
 
@@ -151,7 +159,7 @@ def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -
     return kwargs
 
 
-def _build_prep_kwargs(cfg: PipelineConfig, config_name: str) -> dict:
+def _build_prep_kwargs(cfg: PipelineConfig, config_name: str, instance_id: str) -> dict:
     """Build the kwargs dict for a CPU-only data-prep pod."""
     volume_mount = cfg.runpod.volume_mount
     network_volume_id = _network_volume_id(cfg)
@@ -159,8 +167,10 @@ def _build_prep_kwargs(cfg: PipelineConfig, config_name: str) -> dict:
     kwargs: dict = {
         "name": "farm-data-prep",
         "image_name": _CPU_IMAGE,
-        "gpu_type_id": "NVIDIA GeForce RTX 4090",
         "gpu_count": 0,
+        "instance_id": instance_id,
+        "min_vcpu_count": 4,
+        "min_memory_in_gb": 16,
         "container_disk_in_gb": 10,
         "volume_mount_path": volume_mount,
         "docker_args": _DOCKER_ARGS,
@@ -183,16 +193,81 @@ def _init_runpod(cfg: PipelineConfig):
     return runpod
 
 
-def launch_prep_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml") -> dict:
-    """Launch a cheap CPU-only pod that generates candidates + patches.
+def _wait_for_ssh(pod_id: str, runpod, timeout: int = 120) -> tuple[str, int]:
+    """Poll until the pod exposes an SSH port. Returns (host, port)."""
+    import socket
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pod = runpod.get_pod(pod_id)
+        for port_info in (pod.get("runtime") or {}).get("ports", []):
+            if port_info.get("privatePort") == 22 and port_info.get("isIpPublic"):
+                host = port_info["ip"]
+                port = port_info["publicPort"]
+                # Wait until TCP port actually accepts connections
+                try:
+                    with socket.create_connection((host, port), timeout=5):
+                        return host, port
+                except OSError:
+                    pass
+        time.sleep(10)
+    raise TimeoutError(f"SSH not available on pod {pod_id} after {timeout}s")
 
-    The resulting data lives on the network volume so a later GPU training
-    pod can pick it up without re-extracting.
+
+def _ssh_run_startup(host: str, port: int, script: str) -> None:
+    """SSH into the pod and run the startup script inside a detached tmux session."""
+    import subprocess
+    # Wrap in tmux: session named 'prep', output also tee'd to /tmp/startup.log
+    tmux_cmd = f"tmux new-session -d -s prep 'bash -c {script!r}'"
+    ssh_cmd = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout=10",
+        "-p", str(port),
+        f"root@{host}",
+        tmux_cmd,
+    ]
+    log.info("Starting script on pod via SSH (%s:%d) ...", host, port)
+    subprocess.run(ssh_cmd, check=True)
+    log.info(
+        "Script running in tmux session 'prep'.\n"
+        "  Attach : ssh root@%s -p %d  →  tmux attach -t prep\n"
+        "  Logs   : /tmp/startup.log",
+        host, port,
+    )
+
+
+def launch_prep_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml") -> dict:
+    """Launch a CPU-only pod that generates farm candidates.
+
+    Tries ``cpu_instance_id`` first, then each entry in ``cpu_fallbacks`` until
+    a pod is created successfully. Because RunPod CPU pods ignore docker_args,
+    the startup script is triggered via SSH once the pod is ready.
     """
     runpod = _init_runpod(cfg)
-    log.info("Launching CPU data-prep pod (image=%s) ...", _CPU_IMAGE)
-    pod = runpod.create_pod(**_build_prep_kwargs(cfg, config_name))
-    log.info("Prep pod created: id=%s", pod.get("id"))
+
+    cpu_candidates = [cfg.runpod.cpu_instance_id] + list(cfg.runpod.cpu_fallbacks)
+
+    last_error = None
+    for instance_id in cpu_candidates:
+        log.info("Trying CPU instance %r (image=%s) ...", instance_id, _CPU_IMAGE)
+        try:
+            pod = runpod.create_pod(**_build_prep_kwargs(cfg, config_name, instance_id))
+            log.info("Prep pod created: id=%s instance=%r", pod.get("id"), instance_id)
+            break
+        except runpod.error.QueryError as exc:
+            log.warning("CPU instance %r unavailable: %s", instance_id, exc)
+            last_error = exc
+    else:
+        raise RuntimeError(
+            f"No CPU instances available. Tried: {cpu_candidates}"
+        ) from last_error
+
+    pod_id = pod["id"]
+    startup_script = _build_prep_script(cfg, config_name)
+    log.info("Waiting for SSH on pod %s ...", pod_id)
+    host, port = _wait_for_ssh(pod_id, runpod)
+    _ssh_run_startup(host, port, startup_script)
+    log.info("To watch live:  ssh root@%s -p %d -t 'tmux attach -t prep'", host, port)
     return pod
 
 

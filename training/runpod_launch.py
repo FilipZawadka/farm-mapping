@@ -136,38 +136,24 @@ def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
 
 
 def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
-    """Startup script for a GPU pod: install deps, prep if needed, then train."""
+    """Startup script for a GPU pod: pull code, install deps, then run pipeline."""
+    code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     venv = "/workspace/farm-venv"
     py = f"{venv}/bin/python"
 
-    parts = ["set -euxo pipefail"]
-    parts.extend(_build_clone_steps(cfg))
-    parts.append(f"[ -d {venv} ] || python -m venv {venv}")
-    parts.append(f"{venv}/bin/pip install --no-cache-dir -r requirements-train.txt")
-    parts.append(
-        f"CAND_DIR=$({py} -c \"from training.config import "
-        f"load_config, resolve_paths; cfg=resolve_paths(load_config('configs/{config_name}')); "
-        "print(cfg.data.candidates_dir)\")"
-    )
-    parts.append(
-        f"PATCHES_ROOT=$({py} -c \"from pathlib import Path; "
-        f"from training.config import load_config, resolve_paths; "
-        f"cfg=resolve_paths(load_config('configs/{config_name}')); "
-        "od=Path(cfg.patches.output_dir); "
-        "print(next((p for p in [od]+list(od.parents) if p.name=='patches'), od.parent))\")"
-    )
-    parts.append(
-        "if ! ls \"$CAND_DIR\"/*.csv 1>/dev/null 2>&1 || [ ! -f \"$PATCHES_ROOT/patch_meta.csv\" ]; "
-        f"then {py} -m training.candidates --config configs/{config_name} "
-        f"&& {py} -m training.patch_extraction --config configs/{config_name}; "
-        "fi"
-    )
-    parts.append(f"{py} -m training.train --config configs/{config_name}")
-    parts.append(f"echo '=== running inference ==='")
-    parts.append(f"{py} -m training.inference --config configs/{config_name}")
-    parts.append(f"echo '=== generating prediction map ==='")
-    parts.append(f"{py} -m training.visualize --config configs/{config_name}")
-    parts.append(f"echo '=== DONE: training + inference + visualization complete ==='")
+    parts = [
+        "set -euxo pipefail",
+        _LOAD_RUNPOD_ENV,
+        f"cd {code_dir}",
+        "git pull --ff-only || true",
+        f"[ -d {venv} ]"
+        f" && echo 'farm-venv found, skipping install'"
+        f" || (python -m venv {venv}"
+        f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)",
+        f"echo '=== running pipeline ==='",
+        f"{py} -u -m training.run_pipeline --config configs/{config_name} --skip candidates patch_extraction",
+        f"echo '=== DONE: training + inference + visualization complete ==='",
+    ]
     return " && ".join(parts)
 
 
@@ -191,18 +177,30 @@ def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -
     volume_mount = cfg.runpod.volume_mount
     network_volume_id = _network_volume_id(cfg)
     cloud_type = getattr(cfg.runpod, "cloud_type", "ALL")
+    code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
+    venv = "/workspace/farm-venv"
+    py = f"{venv}/bin/python"
+
+    # Build a simple docker_args command that runs the full pipeline.
+    # Candidates and patches are already on the network volume — skip them.
+    pipeline_cmd = (
+        f"cd {code_dir}"
+        f" && {py} -u -m training.run_pipeline"
+        f" --config configs/{config_name}"
+        f" --skip candidates patch_extraction"
+    )
+    docker_args = f"/bin/bash -lc '{pipeline_cmd}'"
 
     kwargs: dict = {
-        "name": "farm-detection-training",
+        "name": f"farm-train-{config_name.removesuffix('.yaml')}",
         "image_name": cfg.runpod.docker_image,
         "gpu_type_id": gpu_type,
         "container_disk_in_gb": 20,
         "volume_mount_path": volume_mount,
-        "docker_args": _DOCKER_ARGS,
-        "env": {
-            **_RUNPOD_SECRETS_ENV,
-            "STARTUP_SCRIPT": _build_startup_script(cfg, config_name),
-        },
+        "docker_args": docker_args,
+        "ports": "22/tcp",
+        "support_public_ip": True,
+        "env": {},
     }
     if cloud_type != "ALL":
         kwargs["cloud_type"] = cloud_type
@@ -251,7 +249,7 @@ def _init_runpod(cfg: PipelineConfig):
 def _wait_for_ssh(pod_id: str, runpod, timeout: int = 120) -> tuple[str, int]:
     """Poll until the pod exposes an SSH port. Returns (host, port)."""
     import socket
-    deadline = time.time() + timeout
+    deadline = time.time() + max(timeout, 300)  # at least 5 min for GPU pods
     while time.time() < deadline:
         pod = runpod.get_pod(pod_id)
         for port_info in (pod.get("runtime") or {}).get("ports", []):
@@ -275,6 +273,7 @@ def _ssh_run_startup(host: str, port: int, script: str) -> None:
     # Encode as base64 to avoid all quoting/escaping issues over SSH
     script_b64 = base64.b64encode(script.encode()).decode()
     write_cmd = f"echo '{script_b64}' | base64 -d > {remote_script} && chmod +x {remote_script}"
+    setup_cmd = "which tmux >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1)"
     run_cmd = f"tmux new-session -d -s prep 'bash {remote_script} 2>&1 | tee /tmp/startup.log'"
 
     ssh_base = [
@@ -283,6 +282,7 @@ def _ssh_run_startup(host: str, port: int, script: str) -> None:
     ]
     log.info("Uploading startup script to pod (%s:%d) ...", host, port)
     subprocess.run(ssh_base + [write_cmd], check=True)
+    subprocess.run(ssh_base + [setup_cmd], check=True)
     subprocess.run(ssh_base + [run_cmd], check=True)
     log.info(
         "Script running in tmux session 'prep'.\n"
@@ -371,7 +371,8 @@ def launch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml") -> d
     """Provision a RunPod GPU pod and start the training container.
 
     Tries ``gpu_type`` first, then each entry in ``gpu_fallbacks`` until a pod
-    is created successfully. Returns the pod info dict from the RunPod API.
+    is created successfully. Uploads the startup script via SSH and runs it
+    in a tmux session for easy monitoring.
     """
     runpod = _init_runpod(cfg)
 
@@ -382,17 +383,29 @@ def launch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml") -> d
         log.info("Trying GPU %s (image=%s) ...", gpu_type, cfg.runpod.docker_image)
         try:
             pod = runpod.create_pod(**_build_create_kwargs(cfg, gpu_type, config_name))
-            log.info("Pod created: id=%s gpu=%s status=%s",
-                     pod.get("id"), gpu_type, pod.get("desiredStatus"))
-            return pod
+            log.info("Pod created: id=%s gpu=%s", pod.get("id"), gpu_type)
+            break
         except runpod.error.QueryError as exc:
             last_error = exc
             log.warning("GPU %s unavailable: %s", gpu_type, exc)
+    else:
+        raise RuntimeError(
+            f"No instances available for any of {gpu_candidates}. "
+            "Try different GPU types or wait and retry."
+        ) from last_error
 
-    raise RuntimeError(
-        f"No instances available for any of {gpu_candidates}. "
-        "Try different GPU types or wait and retry."
-    ) from last_error
+    pod_id = pod["id"]
+    startup_script = _build_startup_script(cfg, config_name)
+    log.info("Waiting for SSH on pod %s ...", pod_id)
+    host, port = _wait_for_ssh(pod_id, runpod)
+    _ssh_run_startup(host, port, startup_script)
+    log.info(
+        "Script running in tmux session 'prep'.\n"
+        "  Attach : ssh -t root@%s -p %d 'tmux attach -t prep'\n"
+        "  Logs   : /tmp/startup.log",
+        host, port,
+    )
+    return pod
 
 
 def wait_for_completion(pod_id: str, cfg: PipelineConfig, poll_interval: int = 60) -> dict:

@@ -110,11 +110,15 @@ mlflow:
   log_model: true
 
 runpod:
-  gpu_type: "NVIDIA A40"
+  gpu_type: "NVIDIA RTX 4000 Ada Generation"
   gpu_fallbacks:
+    - "NVIDIA RTX A4000"
     - "NVIDIA RTX A5000"
-    - "NVIDIA RTX 4000 Ada Generation"
     - "NVIDIA GeForce RTX 4090"
+    - "NVIDIA L4"
+    - "NVIDIA A40"
+    - "NVIDIA GeForce RTX 3090"
+    - "NVIDIA RTX A4500"
   cloud_type: "ALL"
   docker_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
   volume_mount: /workspace

@@ -238,7 +238,7 @@ def train(cfg: PipelineConfig) -> Path:
     use_amp = cfg.training.mixed_precision and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda") if use_amp else None
 
-    output_dir = Path(cfg.patches.output_dir).parent / "output"
+    output_dir = Path(cfg.patches.output_dir).parent / "output" / cfg._config_stem
     output_dir.mkdir(parents=True, exist_ok=True)
     best_path = output_dir / "best_model.pt"
 

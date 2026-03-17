@@ -212,12 +212,14 @@ def _build_split_layer_js(split_name: str, subset: gpd.GeoDataFrame, n: int) -> 
                                             weight: 2, fillOpacity: 0.7}});
             }},
             onEachFeature: function(f, layer) {{
-                var p = f.properties, html = '<b>' + (p.pred_class||'') + '</b> ({safe})<br>';
+                var p = f.properties, c = f.geometry.coordinates;
+                var html = '<b>' + (p.pred_class||'') + '</b> ({safe})<br>';
                 if(p.predicted_score != null) html += 'Score: ' + p.predicted_score.toFixed(3) + '<br>';
                 if(p.confidence_tier) html += 'Confidence: ' + p.confidence_tier + '<br>';
                 if(p.candidate_id) html += 'ID: ' + p.candidate_id + '<br>';
                 if(p.country) html += 'Country: ' + p.country + '<br>';
                 if(p.source) html += 'Source: ' + p.source + '<br>';
+                html += '<a href="https://www.google.com/maps/@' + c[1] + ',' + c[0] + ',500m/data=!3m1!1e3" target="_blank">Open in Google Maps</a><br>';
                 layer.bindPopup(html);
             }}
         }}).addTo(map);
@@ -270,9 +272,13 @@ def generate_prediction_map(
 
 def visualize(cfg: PipelineConfig) -> Path:
     """Load scored candidates and generate the prediction map."""
-    output_dir = Path(cfg.patches.output_dir)
-    scored_path = output_dir / "scored_candidates.parquet"
+    # Config-specific output directory
+    scored_dir = Path(cfg.patches.output_dir).parent / "output" / cfg._config_stem
+    scored_path = scored_dir / "scored_candidates.parquet"
 
+    if not scored_path.exists():
+        # Legacy fallback
+        scored_path = Path(cfg.patches.output_dir) / "scored_candidates.parquet"
     if not scored_path.exists():
         log.error("No scored_candidates.parquet found -- run inference first")
         raise FileNotFoundError(scored_path)

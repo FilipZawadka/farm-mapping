@@ -12,7 +12,7 @@ data/
 
 output/
 mlruns/
-notebooks/
+notebooks_old/
 *.npy
 *.pt
 *.pth
@@ -48,4 +48,4 @@ build/
 
 
 TODO.md
-todo_prompts.md
+todo_prompts.md 

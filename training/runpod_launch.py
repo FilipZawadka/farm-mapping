@@ -66,6 +66,31 @@ Needed because tmux sessions don't inherit env vars set by the RunPod container 
 """
 
 
+def _run_dir_name(run_name: str) -> str:
+    """Build the leaf directory name: {run_name}_{timestamp} or just {timestamp}."""
+    # $(...) is evaluated in the shell at runtime
+    ts = "$(date -u +%Y%m%d_%H%M%S)"
+    if run_name:
+        return f"{run_name}_{ts}"
+    return ts
+
+
+def _run_dir_cmd(cfg: "PipelineConfig", config_name: str, step: str) -> str:
+    """Shell snippet that creates a timestamped run directory and exports RUN_DIR.
+
+    Structure: runs/{config_stem}/{step}/{run_name}_{timestamp}/
+    """
+    code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
+    stem = config_name.removesuffix(".yaml")
+    leaf = _run_dir_name(getattr(cfg, "run_name", ""))
+    return (
+        f"RUN_DIR={code_dir}/runs/{stem}/{step}/{leaf}"
+        f" && mkdir -p $RUN_DIR"
+        f" && cp {code_dir}/configs/{config_name} $RUN_DIR/config.yaml"
+        f" && ln -sfn $RUN_DIR {code_dir}/runs/{stem}/latest"
+    )
+
+
 def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
     """Startup script for a CPU-only pod: candidates generation only.
 
@@ -80,6 +105,7 @@ def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
         "set -euxo pipefail",
         _LOAD_RUNPOD_ENV,
         f"cd {code_dir}",
+        _run_dir_cmd(cfg, config_name, "candidates"),
         f"echo '=== pod started, config={config_name} ==='",
     ]
     parts.extend(_build_clone_steps(cfg))
@@ -112,6 +138,7 @@ def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
         "set -euxo pipefail",
         _LOAD_RUNPOD_ENV,
         f"cd {code_dir}",
+        _run_dir_cmd(cfg, config_name, "patches"),
         f"echo '=== pod started (patch extraction), config={config_name} ==='",
     ]
     parts.extend(_build_clone_steps(cfg))
@@ -257,7 +284,8 @@ def _ssh_run_startup(host: str, port: int, script: str) -> None:
     script_b64 = base64.b64encode(script.encode()).decode()
     write_cmd = f"echo '{script_b64}' | base64 -d > {remote_script} && chmod +x {remote_script}"
     setup_cmd = "which tmux >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1)"
-    run_cmd = f"tmux new-session -d -s prep 'bash {remote_script} 2>&1 | tee /tmp/startup.log'"
+    # Log to /tmp for quick SSH access and to runs/latest/ for persistence on network volume
+    run_cmd = f"tmux new-session -d -s prep 'bash {remote_script} 2>&1 | tee /tmp/startup.log; cp /tmp/startup.log /workspace/farm-mapping/runs/latest/startup.log 2>/dev/null'"
 
     ssh_base = [
         "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",

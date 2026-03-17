@@ -343,7 +343,9 @@ def build_splits(
     split_col.iloc[test_idx] = "test"
     splits_df = meta_clean[["candidate_id"]].copy()
     splits_df["split"] = split_col
-    splits_path = patches_root / "split_assignments.csv"
+    splits_dir = patches_root / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    splits_path = splits_dir / f"{cfg._config_stem}.csv"
     splits_df.to_csv(splits_path, index=False)
     log.info("Saved split assignments to %s", splits_path)
 

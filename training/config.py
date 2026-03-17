@@ -282,6 +282,9 @@ class VizConfig(BaseModel):
 class PipelineConfig(BaseModel):
     """Root config that aggregates all sections."""
 
+    run_name: str = ""
+    _config_stem: str = "default"  # set by load_config from the yaml filename
+
     data: DataConfig = Field(default_factory=DataConfig)
     patches: PatchConfig = Field(default_factory=PatchConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
@@ -297,7 +300,9 @@ def load_config(yaml_path: str | Path) -> PipelineConfig:
     """Load and validate a YAML config file into a :class:`PipelineConfig`."""
     with open(yaml_path, encoding="utf-8") as fh:
         raw = yaml.safe_load(fh)
-    return PipelineConfig.model_validate(raw or {})
+    cfg = PipelineConfig.model_validate(raw or {})
+    cfg._config_stem = Path(yaml_path).stem
+    return cfg
 
 
 def resolve_paths(cfg: PipelineConfig, root: Optional[Path] = None) -> PipelineConfig:

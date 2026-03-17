@@ -1,36 +1,21 @@
 # ============================================================================
-# Global Farm Detection — All Major Farm Types
+# USA All Farms — All Major Farm Types
 # ============================================================================
-# Train: USA (70% states), Mexico, Chile, Brazil, Thailand
-# Val:   USA (15% states), United Kingdom, Australia
-# Test:  USA (15% states), Argentina, Canada  (held-out countries)
+# All 50 states split: ~70% train, ~15% val, ~15% test
+# Positives: Farm Transparency — dairy, meat, and egg farms
+# Negatives: random rural locations (cleaner than OSM buildings which had mislabeled farms)
 #
-# Detects: dairy, meat, and egg farms across all major livestock species.
-# Negative sampling: random rural locations (balanced 1:1).
+# ~22,800 positives + ~22,800 negatives = ~45,600 candidates
+# Species: Chickens, Pigs, Cattle, Turkeys, Ducks, Sheep, Goats
+
+run_name: "resnet50_all_farms_v1"
 
 data:
-  countries:
-    - united_states
-    - mexico
-    - chile
-    - brazil
-    - thailand
-    - united_kingdom
-    - australia
-    - argentina
-    - canada
-  species_filter: [Chickens, Pigs, Turkeys, Ducks, Cattle, Sheep, Goats]
+  countries: [united_states]
+  species_filter: [Chickens, Pigs, Cattle, Turkeys, Ducks, Sheep, Goats]
   categories_include: [Farm, "Farm (meat)", "Farm (eggs)", "Farm (dairy)"]
-  candidates_dir: data/candidates/global_all_farms
-  osm_farm_cache_dir: data/cache/osm_farm_finder
-
-  # --- Region-based splits ---
-  # USA: 70/15/15 state split (same as chicken_eggs config)
-  # Small train countries: all data goes to training
-  # UK + Australia: validation (out-of-distribution)
-  # Argentina + Canada: test-only (completely held out)
+  candidates_dir: data/candidates/usa_all_farms
   train_regions:
-    # USA ~70% of states
     - united_states/AL
     - united_states/AK
     - united_states/AZ
@@ -66,13 +51,7 @@ data:
     - united_states/NC
     - united_states/ND
     - united_states/OH
-    # Entire countries in training
-    - mexico
-    - chile
-    - brazil
-    - thailand
   val_regions:
-    # USA ~15% of states
     - united_states/OK
     - united_states/OR
     - united_states/PA
@@ -81,11 +60,7 @@ data:
     - united_states/SD
     - united_states/TN
     - united_states/TX
-    # Out-of-distribution countries for validation
-    - united_kingdom
-    - australia
   test_regions:
-    # USA ~15% of states
     - united_states/UT
     - united_states/VT
     - united_states/VA
@@ -93,10 +68,7 @@ data:
     - united_states/WV
     - united_states/WI
     - united_states/WY
-    # Completely held-out countries
-    - argentina
-    - canada
-
+  osm_farm_cache_dir: data/cache/osm_farm_finder
   negative_sampling:
     strategy: random_rural
     ratio: 1.0
@@ -121,12 +93,12 @@ model:
   pretrained: true
   num_classes: 2
   input_channels: 9
-  freeze_backbone_epochs: 5
+  freeze_backbone_epochs: 3
 
 training:
   epochs: 50
-  batch_size: 16
-  learning_rate: 0.00005
+  batch_size: 32
+  learning_rate: 0.0001
   weight_decay: 0.01
   scheduler: cosine
   early_stopping_patience: 10
@@ -134,11 +106,11 @@ training:
   test_split: 0.15
   seed: 42
   mixed_precision: true
-  class_weight: [1.0, 2.0]
+  class_weight: [1.0, 1.5]
 
 mlflow:
   tracking_uri: ./mlruns
-  experiment_name: global_all_farms_v1
+  experiment_name: usa_all_farms_v1
   log_model: true
 
 runpod:
@@ -166,7 +138,7 @@ runpod:
   auto_terminate: true
 
 inference:
-  checkpoint: output/best_model.pt
+  checkpoint: output/usa_all_farms/best_model.pt
   threshold: 0.5
   confidence_tiers:
     high: 0.8
@@ -174,7 +146,7 @@ inference:
     low: 0.3
 
 visualization:
-  output_dir: output/maps_global_all_farms
+  output_dir: output/maps_usa_all_farms
   show_true_positives: true
   show_false_positives: true
   show_false_negatives: true

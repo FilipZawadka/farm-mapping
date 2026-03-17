@@ -49,6 +49,10 @@ def _load_model(cfg: PipelineConfig, device: torch.device):
     model = build_model(cfg.model).to(device)
     ckpt_path = Path(cfg.inference.checkpoint)
     if not ckpt_path.exists():
+        # Config-specific output directory
+        ckpt_path = Path(cfg.patches.output_dir).parent / "output" / cfg._config_stem / "best_model.pt"
+    if not ckpt_path.exists():
+        # Legacy fallback
         ckpt_path = Path(cfg.patches.output_dir).parent / "output" / "best_model.pt"
     model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
     model.eval()
@@ -140,8 +144,11 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     result["confidence_tier"] = _assign_confidence(scores_arr, cfg)
     _attach_labels(result, candidates)
 
-    # Attach split assignments if available
-    splits_path = patches_root / "split_assignments.csv"
+    # Attach split assignments if available (config-specific)
+    splits_path = patches_root / "splits" / f"{cfg._config_stem}.csv"
+    if not splits_path.exists():
+        # Fallback to legacy shared path
+        splits_path = patches_root / "split_assignments.csv"
     if splits_path.exists():
         splits = pd.read_csv(splits_path)
         split_map = dict(zip(splits["candidate_id"].astype(str), splits["split"]))
@@ -153,7 +160,10 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     geometry = [Point(lng, lat) for lng, lat in zip(result["lng"], result["lat"])]
     scored_gdf = gpd.GeoDataFrame(result, geometry=geometry, crs="EPSG:4326")
 
-    output_path = output_dir / "scored_candidates.parquet"
+    # Save to config-specific output directory
+    scored_dir = Path(cfg.patches.output_dir).parent / "output" / cfg._config_stem
+    scored_dir.mkdir(parents=True, exist_ok=True)
+    output_path = scored_dir / "scored_candidates.parquet"
     scored_gdf.to_parquet(output_path, index=False)
     log.info("Saved %d scored candidates to %s", len(scored_gdf), output_path)
     return scored_gdf

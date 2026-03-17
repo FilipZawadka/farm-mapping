@@ -94,9 +94,7 @@ def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
     parts.append(f"echo '=== DONE: candidates saved to {code_dir}/data/candidates/ ==='")
     if getattr(cfg.runpod, "auto_terminate", True):
         parts.append(
-            f"{py} -c \"import runpod, os; runpod.api_key=os.environ['RUNPOD_API_KEY'];"
-            f" runpod.terminate_pod(os.environ['RUNPOD_POD_ID']);"
-            f" print('=== pod self-terminating ===')\""
+            f"{py} -m training.auto_terminate"
         )
     return " && ".join(parts)
 
@@ -128,9 +126,7 @@ def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
     parts.append(f"echo '=== DONE: patches saved to {code_dir}/data/patches/ ==='")
     if getattr(cfg.runpod, "auto_terminate", True):
         parts.append(
-            f"{py} -c \"import runpod, os; runpod.api_key=os.environ['RUNPOD_API_KEY'];"
-            f" runpod.terminate_pod(os.environ['RUNPOD_POD_ID']);"
-            f" print('=== pod self-terminating ===')\""
+            f"{py} -m training.auto_terminate"
         )
     return " && ".join(parts)
 
@@ -154,6 +150,8 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
         f"{py} -u -m training.run_pipeline --config configs/{config_name} --skip candidates patch_extraction",
         f"echo '=== DONE: training + inference + visualization complete ==='",
     ]
+    if getattr(cfg.runpod, "auto_terminate", True):
+        parts.append(f"{py} -m training.auto_terminate")
     return " && ".join(parts)
 
 

@@ -117,6 +117,7 @@ COUNTRIES: dict[str, CountryConfig] = {
         iso_code="BR",
         bounds=(-73.9, -33.7, -34.8, 5.3),
         tile_size_deg=0.5,
+        farm_transparency_path="farm_transparency_maps/All facilities in Brazil.csv",
         osm_path="farms/osm/All facilities in Brazil.csv",
     ),
     "australia": CountryConfig(
@@ -125,6 +126,34 @@ COUNTRIES: dict[str, CountryConfig] = {
         bounds=(113.3, -43.6, 153.6, -10.7),
         tile_size_deg=0.5,
         farm_transparency_path="farms/farm_transparency/All facilities in Australia.csv",
+    ),
+    "mexico": CountryConfig(
+        name="Mexico",
+        iso_code="MX",
+        bounds=(-118.4, 14.5, -86.7, 32.7),
+        tile_size_deg=0.5,
+        farm_transparency_path="farm_transparency_maps/All facilities in Mexico.csv",
+    ),
+    "chile": CountryConfig(
+        name="Chile",
+        iso_code="CL",
+        bounds=(-75.6, -55.9, -66.4, -17.5),
+        tile_size_deg=0.5,
+        farm_transparency_path="farm_transparency_maps/All facilities in Chile.csv",
+    ),
+    "argentina": CountryConfig(
+        name="Argentina",
+        iso_code="AR",
+        bounds=(-73.6, -55.1, -53.6, -21.8),
+        tile_size_deg=0.5,
+        farm_transparency_path="farm_transparency_maps/All facilities in Argentina.csv",
+    ),
+    "canada": CountryConfig(
+        name="Canada",
+        iso_code="CA",
+        bounds=(-141.0, 41.7, -52.6, 83.1),
+        tile_size_deg=0.5,
+        farm_transparency_path="farm_transparency_maps/All facilities in Canada.csv",
     ),
 }
 

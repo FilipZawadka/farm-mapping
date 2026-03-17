@@ -215,6 +215,8 @@ class TrainingConfig(BaseModel):
     mixed_precision: bool = True
     # Class weights [neg, pos] to penalize false positives when model predicts all positive
     class_weight: Optional[list[float]] = None
+    # Upsample minority regions so each country contributes equally per epoch
+    upsample_minority_regions: bool = False
 
 
 class MLflowConfig(BaseModel):

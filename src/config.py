@@ -155,6 +155,12 @@ COUNTRIES: dict[str, CountryConfig] = {
         tile_size_deg=0.5,
         farm_transparency_path="farm_transparency_maps/All facilities in Canada.csv",
     ),
+    "germany": CountryConfig(
+        name="Germany",
+        iso_code="DE",
+        bounds=(5.9, 47.3, 15.0, 55.1),
+        farm_transparency_path="farm_transparency_maps/All facilities in Germany.csv",
+    ),
 }
 
 

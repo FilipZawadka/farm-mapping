@@ -17,7 +17,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from .config import PipelineConfig, imagery_config_hash, matches_any_region
+from .config import PipelineConfig, imagery_config_hash, matches_any_region, build_country_key_map
 
 log = logging.getLogger(__name__)
 
@@ -384,8 +384,49 @@ def build_splits(
 
     n_spectral = len(cfg.patches.bands)
 
-    return (
-        PatchDataset(meta_clean.iloc[train_idx], candidates, patches_root, augment=True, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral),
-        PatchDataset(meta_clean.iloc[val_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral),
-        PatchDataset(meta_clean.iloc[test_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral),
+    train_ds = PatchDataset(meta_clean.iloc[train_idx], candidates, patches_root, augment=True, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
+    val_ds = PatchDataset(meta_clean.iloc[val_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
+    test_ds = PatchDataset(meta_clean.iloc[test_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
+
+    # Compute per-sample weights for region upsampling
+    if cfg.training.upsample_minority_regions:
+        train_ds.sample_weights = _compute_region_weights(
+            meta_clean.iloc[train_idx], candidates,
+        )
+
+    return train_ds, val_ds, test_ds
+
+
+def _compute_region_weights(
+    meta: pd.DataFrame, candidates: pd.DataFrame,
+) -> np.ndarray:
+    """Compute per-sample weights so each country contributes equally per epoch.
+
+    Samples from countries with fewer patches get higher weight, so that
+    a ``WeightedRandomSampler`` draws roughly the same number of samples
+    from each country.
+    """
+    name_to_key = build_country_key_map()
+    cid_to_country = dict(zip(
+        candidates["id"].astype(str),
+        candidates["country"].astype(str) if "country" in candidates.columns else "",
+    ))
+    countries = meta["candidate_id"].astype(str).map(cid_to_country).fillna("unknown")
+    country_keys = countries.map(name_to_key).fillna(countries)
+
+    counts = country_keys.value_counts()
+    n_countries = len(counts)
+    total = len(meta)
+
+    # Weight = total / (n_countries * count_for_this_country)
+    # This makes each country's total weight equal to total / n_countries
+    weight_map = {c: total / (n_countries * n) for c, n in counts.items()}
+    weights = country_keys.map(weight_map).values.astype(np.float64)
+
+    log.info(
+        "Region upsampling weights: %s",
+        ", ".join(f"{c}={w:.2f} (n={n})" for c, (n, w) in
+                  zip(counts.index, zip(counts.values, [weight_map[c] for c in counts.index]))),
     )
+
+    return weights

@@ -16,7 +16,7 @@ import mlflow
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from .config import PipelineConfig, cache_key, load_config, resolve_paths
 from .dataset import build_splits
@@ -223,7 +223,20 @@ def train(cfg: PipelineConfig) -> Path:
 
     train_ds, val_ds, test_ds = build_splits(cfg, patches_dir=patches_dir)
     bs = cfg.training.batch_size
-    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=0)
+
+    # Use weighted sampler when upsampling minority regions
+    train_sampler = None
+    train_shuffle = True
+    if cfg.training.upsample_minority_regions and hasattr(train_ds, "sample_weights"):
+        train_sampler = WeightedRandomSampler(
+            weights=train_ds.sample_weights,
+            num_samples=len(train_ds),
+            replacement=True,
+        )
+        train_shuffle = False  # sampler and shuffle are mutually exclusive
+        log.info("Using WeightedRandomSampler for region upsampling")
+
+    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=train_shuffle, sampler=train_sampler, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=bs, shuffle=False, num_workers=0)
 

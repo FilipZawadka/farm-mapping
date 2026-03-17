@@ -182,6 +182,23 @@ def _flush_meta(rows: list[dict], patches_root: Path) -> list[dict]:
     return []
 
 
+def _record_failed(candidate_id: str, error: str, patches_root: Path) -> None:
+    """Append a failed candidate to ``failed_patches.csv``."""
+    failed_path = patches_root / "failed_patches.csv"
+    write_header = not failed_path.exists()
+    pd.DataFrame([{"candidate_id": candidate_id, "error": error[:200]}]).to_csv(
+        failed_path, mode="a", header=write_header, index=False
+    )
+
+
+def _load_failed_ids(patches_root: Path) -> set[str]:
+    """Load previously failed candidate IDs."""
+    failed_path = patches_root / "failed_patches.csv"
+    if not failed_path.exists():
+        return set()
+    return set(pd.read_csv(failed_path, usecols=["candidate_id"])["candidate_id"].astype(str))
+
+
 def _extract_sequential(
     candidates: pd.DataFrame,
     patch_cfg: PatchConfig,
@@ -196,8 +213,9 @@ def _extract_sequential(
     rows: list[dict] = []
     total = len(candidates)
     for i, (_, row) in enumerate(candidates.iterrows()):
+        cid = str(row.get("id", i))
         meta = _extract_one_patch(
-            str(row.get("id", i)),
+            cid,
             float(row["lat"]),
             float(row["lng"]),
             str(row.get("state", "")),
@@ -213,6 +231,8 @@ def _extract_sequential(
         )
         if meta:
             rows.append(meta)
+        else:
+            _record_failed(cid, "extraction failed", patches_root)
         if (i + 1) % 10 == 0:
             log.info("  %d / %d patches extracted", i + 1, total)
         if len(rows) >= _FLUSH_EVERY:
@@ -234,10 +254,12 @@ def _extract_parallel(
     rows: list[dict] = []
     total = len(candidates)
     with ThreadPoolExecutor(max_workers=patch_cfg.num_workers) as pool:
-        futures = {
-            pool.submit(
+        cid_map = {}
+        for i, (_, row) in enumerate(candidates.iterrows()):
+            cid = str(row.get("id", i))
+            fut = pool.submit(
                 _extract_one_patch,
-                str(row.get("id", i)),
+                cid,
                 float(row["lat"]),
                 float(row["lng"]),
                 str(row.get("state", "")),
@@ -250,14 +272,15 @@ def _extract_parallel(
                 date_end,
                 imagery_hash,
                 imagery_meta,
-            ): i
-            for i, (_, row) in enumerate(candidates.iterrows())
-        }
+            )
+            cid_map[fut] = cid
         done = 0
-        for fut in as_completed(futures):
+        for fut in as_completed(cid_map):
             meta = fut.result()
             if meta:
                 rows.append(meta)
+            else:
+                _record_failed(cid_map[fut], "extraction failed", patches_root)
             done += 1
             if done % 10 == 0:
                 log.info("  %d / %d patches extracted", done, total)
@@ -305,13 +328,29 @@ def extract_patches(
 
     # Skip candidates already present in patch_meta.csv (resume support)
     meta_path = patches_root / "patch_meta.csv"
+    skip_ids: set[str] = set()
     if meta_path.exists():
-        done_ids = set(pd.read_csv(meta_path, usecols=["candidate_id"])["candidate_id"].astype(str))
+        skip_ids = set(pd.read_csv(meta_path, usecols=["candidate_id"])["candidate_id"].astype(str))
+
+    # Also skip previously failed patches (unless retry_failed is set)
+    if not patch_cfg.retry_failed:
+        failed_ids = _load_failed_ids(patches_root)
+        if failed_ids:
+            log.info("Skipping %d previously failed patches (set retry_failed: true to retry).", len(failed_ids))
+            skip_ids |= failed_ids
+    else:
+        # Clear failed log so they get a fresh attempt
+        failed_path = patches_root / "failed_patches.csv"
+        if failed_path.exists():
+            failed_path.unlink()
+            log.info("Cleared failed_patches.csv — retrying all previously failed patches.")
+
+    if skip_ids:
         before = len(candidates)
-        candidates = candidates[~candidates["id"].astype(str).isin(done_ids)]
+        candidates = candidates[~candidates["id"].astype(str).isin(skip_ids)]
         skipped = before - len(candidates)
         if skipped:
-            log.info("Skipping %d already-extracted patches, %d remaining.", skipped, len(candidates))
+            log.info("Skipping %d already-extracted/failed patches, %d remaining.", skipped, len(candidates))
 
     if len(candidates) == 0:
         log.info("All patches already extracted.")

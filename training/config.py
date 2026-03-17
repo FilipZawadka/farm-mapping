@@ -128,6 +128,7 @@ class PatchConfig(BaseModel):
     max_cloud_cover: int = 15
     output_dir: str = "data/patches"
     num_workers: int = 4
+    retry_failed: bool = False
     # Optional: list of imagery sources (provider + options). If absent, single EE S2 source is used from bands/indices/date_range above.
     imagery_sources: Optional[list[dict[str, Any]]] = None
 

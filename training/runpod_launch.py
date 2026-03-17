@@ -44,13 +44,19 @@ def _build_clone_steps(cfg: PipelineConfig) -> list[str]:
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     repo = getattr(cfg.runpod, "github_repo", "")
     branch = getattr(cfg.runpod, "github_branch", "main")
-    parts: list[str] = []
+    parts: list[str] = [
+        # Trust the network volume directory (may be owned by a different uid)
+        f"git config --global --add safe.directory {code_dir}",
+    ]
     if repo:
-        parts.append("apt-get update -qq && apt-get install -y -qq git")
+        parts.append("which git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git)")
         parts.append(
             f"git clone --branch {branch} --single-branch {repo} {code_dir}"
             f" || (cd {code_dir} && git fetch origin && git reset --hard origin/{branch})"
         )
+    else:
+        # No repo configured — pull latest if already a git repo
+        parts.append(f"cd {code_dir} && git pull --ff-only || true")
     parts.append(f"cd {code_dir}")
     return parts
 
@@ -167,6 +173,7 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
     parts = [
         "set -euxo pipefail",
         _LOAD_RUNPOD_ENV,
+        f"git config --global --add safe.directory {code_dir}",
         f"cd {code_dir}",
         "git pull --ff-only || true",
         f"[ -d {venv} ]"

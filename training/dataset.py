@@ -139,18 +139,51 @@ def _assign_by_region(
     val_regions: list[str],
     test_regions: list[str],
 ) -> tuple[list[int], list[int], list[int]]:
-    """Deterministically assign rows to splits by region membership."""
+    """Deterministically assign rows to splits by region membership.
+
+    Country-wide candidates (no state) match all regions, so they would be
+    claimed by every split.  We collect these separately and distribute them
+    proportionally across splits based on the region counts to avoid data
+    leakage and keep the class balance even.
+    """
     train_idx: list[int] = []
     val_idx: list[int] = []
     test_idx: list[int] = []
+    countrywide_idx: list[int] = []
+
+    all_regions = set(train_regions) | set(val_regions) | set(test_regions)
+
     for i in range(len(keys)):
         k, s = str(keys.iloc[i]), str(states.iloc[i])
+        # Country-wide candidate (no state) that belongs to a configured country
+        if not s and any(k == r.split("/", 1)[0] for r in all_regions):
+            countrywide_idx.append(i)
+            continue
         if matches_any_region(k, s, test_regions):
             test_idx.append(i)
         elif matches_any_region(k, s, val_regions):
             val_idx.append(i)
         elif matches_any_region(k, s, train_regions):
             train_idx.append(i)
+
+    # Distribute country-wide candidates proportionally across splits
+    if countrywide_idx:
+        n_tr, n_va, n_te = len(train_idx), len(val_idx), len(test_idx)
+        total = n_tr + n_va + n_te
+        if total > 0:
+            # Deterministic shuffle so splits are reproducible
+            countrywide_idx.sort()
+            n = len(countrywide_idx)
+            n_cw_te = max(1, round(n * n_te / total)) if n_te > 0 else 0
+            n_cw_va = max(1, round(n * n_va / total)) if n_va > 0 else 0
+            n_cw_tr = n - n_cw_te - n_cw_va
+            test_idx.extend(countrywide_idx[:n_cw_te])
+            val_idx.extend(countrywide_idx[n_cw_te:n_cw_te + n_cw_va])
+            train_idx.extend(countrywide_idx[n_cw_te + n_cw_va:])
+        else:
+            # No state-specific candidates assigned yet; put all in train
+            train_idx.extend(countrywide_idx)
+
     return train_idx, val_idx, test_idx
 
 

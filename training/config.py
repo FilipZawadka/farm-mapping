@@ -31,10 +31,18 @@ def parse_region(region: str) -> tuple[str, str | None]:
 
 
 def candidate_matches_region(country_key: str, state: str, region: str) -> bool:
-    """Return *True* when a candidate's (country_key, state) matches *region*."""
+    """Return *True* when a candidate's (country_key, state) matches *region*.
+
+    Country-wide candidates (state is empty/None) match any region for that
+    country.  This ensures negatives sampled at the country level are included
+    in region-based splits.
+    """
     r_country, r_state = parse_region(region)
     if r_country != country_key:
         return False
+    # Country-wide candidate (no state) → matches any region in that country
+    if not state:
+        return True
     if r_state is not None and r_state != state:
         return False
     return True

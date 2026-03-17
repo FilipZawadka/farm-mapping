@@ -1,0 +1,145 @@
+# ============================================================================
+# USA All Farms — EfficientNet-B0
+# ============================================================================
+# Lightweight, efficient CNN. Best accuracy-per-FLOP ratio.
+# ~5M params (much smaller than ResNet50's 23M). Faster training.
+# Same data/splits as usa_all_farms.yaml for fair comparison.
+
+run_name: "efficientnet_b0_v1"
+
+data:
+  countries: [united_states]
+  species_filter: [Chickens, Pigs, Cattle, Turkeys, Ducks, Sheep, Goats]
+  categories_include: [Farm, "Farm (meat)", "Farm (eggs)", "Farm (dairy)"]
+  candidates_dir: data/candidates/usa_all_farms
+  train_regions:
+    - united_states/AL
+    - united_states/AK
+    - united_states/AZ
+    - united_states/AR
+    - united_states/CA
+    - united_states/CO
+    - united_states/CT
+    - united_states/DE
+    - united_states/FL
+    - united_states/GA
+    - united_states/HI
+    - united_states/ID
+    - united_states/IL
+    - united_states/IN
+    - united_states/IA
+    - united_states/KS
+    - united_states/KY
+    - united_states/LA
+    - united_states/ME
+    - united_states/MD
+    - united_states/MA
+    - united_states/MI
+    - united_states/MN
+    - united_states/MS
+    - united_states/MO
+    - united_states/MT
+    - united_states/NE
+    - united_states/NV
+    - united_states/NH
+    - united_states/NJ
+    - united_states/NM
+    - united_states/NY
+    - united_states/NC
+    - united_states/ND
+    - united_states/OH
+  val_regions:
+    - united_states/OK
+    - united_states/OR
+    - united_states/PA
+    - united_states/RI
+    - united_states/SC
+    - united_states/SD
+    - united_states/TN
+    - united_states/TX
+  test_regions:
+    - united_states/UT
+    - united_states/VT
+    - united_states/VA
+    - united_states/WA
+    - united_states/WV
+    - united_states/WI
+    - united_states/WY
+  osm_farm_cache_dir: data/cache/osm_farm_finder
+  negative_sampling:
+    strategy: random_rural
+    ratio: 1.0
+    min_distance_m: 2000
+    seed: 42
+    osm_cache_dir: data/cache/osm_negatives
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches
+  num_workers: 4
+
+model:
+  architecture: efficientnet_b0
+  hub_name: google/efficientnet-b0
+  pretrained: true
+  num_classes: 2
+  input_channels: 9
+  freeze_backbone_epochs: 3
+
+training:
+  epochs: 50
+  batch_size: 64          # smaller model = can fit larger batches
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 10
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+  class_weight: [1.0, 1.5]
+
+mlflow:
+  tracking_uri: ./mlruns
+  experiment_name: usa_all_farms_efficientnet
+  log_model: true
+
+runpod:
+  gpu_type: "NVIDIA RTX 4000 Ada Generation"
+  gpu_fallbacks:
+    - "NVIDIA RTX A4000"
+    - "NVIDIA RTX A5000"
+    - "NVIDIA GeForce RTX 4090"
+    - "NVIDIA L4"
+    - "NVIDIA A40"
+    - "NVIDIA GeForce RTX 3090"
+  cloud_type: "ALL"
+  docker_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+  volume_mount: /workspace
+  code_dir: /workspace/farm-mapping
+  github_repo: https://github.com/FilipZawadka/farm-mapping.git
+  github_branch: main
+  api_key_env: RUNPOD_API_KEY
+  network_volume_id: r8nyom4e4e
+  auto_terminate: true
+
+inference:
+  checkpoint: output/usa_all_farms_efficientnet/best_model.pt
+  threshold: 0.5
+  confidence_tiers:
+    high: 0.8
+    medium: 0.5
+    low: 0.3
+
+visualization:
+  output_dir: output/maps_usa_all_farms_efficientnet
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: true

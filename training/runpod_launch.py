@@ -72,6 +72,29 @@ Needed because tmux sessions don't inherit env vars set by the RunPod container 
 """
 
 
+_SCRIPT_PREAMBLE = (
+    "set -uxo pipefail"   # trace + pipefail, but NOT -e (we handle errors via trap)
+    " ; _on_err() {"
+    " local exit_code=$?;"
+    " echo '';"
+    " echo '==========================================';"
+    " echo \"SCRIPT FAILED (exit $exit_code)\";"
+    " echo \"Failed command: $BASH_COMMAND\";"
+    " echo \"Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S')\";"
+    " echo '==========================================';"
+    " echo \"$(date -u '+%Y-%m-%d %H:%M:%S') FATAL exit=$exit_code cmd=$BASH_COMMAND\""
+    " >> ${RUN_DIR:-/tmp}/startup.log 2>/dev/null;"
+    " exit $exit_code; }"
+    " ; trap '_on_err' ERR"
+    " ; set -e"  # now enable -e after trap is installed
+)
+"""Script preamble that installs an ERR trap before enabling set -e.
+
+Ensures the failing command is logged to startup.log on the network volume
+before the script exits, so we can debug terminated pods.
+"""
+
+
 def _run_dir_name(run_name: str) -> str:
     """Build the leaf directory name: {run_name}_{timestamp} or just {timestamp}."""
     # $(...) is evaluated in the shell at runtime
@@ -85,6 +108,9 @@ def _run_dir_cmd(cfg: "PipelineConfig", config_name: str, step: str) -> str:
     """Shell snippet that creates a timestamped run directory and exports RUN_DIR.
 
     Structure: runs/{config_stem}/{step}/{run_name}_{timestamp}/
+    Also redirects all subsequent stdout/stderr to $RUN_DIR/startup.log
+    (via exec) so that logs persist on the network volume even if the pod
+    is terminated unexpectedly.
     """
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     stem = config_name.removesuffix(".yaml")
@@ -94,6 +120,8 @@ def _run_dir_cmd(cfg: "PipelineConfig", config_name: str, step: str) -> str:
         f" && mkdir -p $RUN_DIR"
         f" && cp {code_dir}/configs/{config_name} $RUN_DIR/config.yaml"
         f" && ln -sfn $RUN_DIR {code_dir}/runs/{stem}/latest"
+        # Redirect all output to the network volume log (unbuffered via stdbuf)
+        f" && exec > >(stdbuf -oL tee -a $RUN_DIR/startup.log) 2>&1"
     )
 
 
@@ -108,7 +136,7 @@ def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
     py = f"{venv}/bin/python"
 
     parts = [
-        "set -euxo pipefail",
+        _SCRIPT_PREAMBLE,
         _LOAD_RUNPOD_ENV,
         f"cd {code_dir}",
         _run_dir_cmd(cfg, config_name, "candidates"),
@@ -141,7 +169,7 @@ def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
     py = f"{venv}/bin/python"
 
     parts = [
-        "set -euxo pipefail",
+        _SCRIPT_PREAMBLE,
         _LOAD_RUNPOD_ENV,
         f"cd {code_dir}",
         _run_dir_cmd(cfg, config_name, "patches"),
@@ -171,10 +199,11 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
     py = f"{venv}/bin/python"
 
     parts = [
-        "set -euxo pipefail",
+        _SCRIPT_PREAMBLE,
         _LOAD_RUNPOD_ENV,
         f"git config --global --add safe.directory {code_dir}",
         f"cd {code_dir}",
+        _run_dir_cmd(cfg, config_name, "pipeline"),
         "git pull --ff-only || true",
         f"[ -d {venv} ]"
         f" && echo 'farm-venv found, skipping install'"
@@ -291,8 +320,9 @@ def _ssh_run_startup(host: str, port: int, script: str) -> None:
     script_b64 = base64.b64encode(script.encode()).decode()
     write_cmd = f"echo '{script_b64}' | base64 -d > {remote_script} && chmod +x {remote_script}"
     setup_cmd = "which tmux >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1)"
-    # Log to /tmp for quick SSH access and to runs/latest/ for persistence on network volume
-    run_cmd = f"tmux new-session -d -s prep 'bash {remote_script} 2>&1 | tee /tmp/startup.log; cp /tmp/startup.log /workspace/farm-mapping/runs/latest/startup.log 2>/dev/null'"
+    # The script itself logs to $RUN_DIR/startup.log on the network volume via exec.
+    # Also mirror to /tmp for quick SSH access.
+    run_cmd = f"tmux new-session -d -s prep 'bash {remote_script} 2>&1 | tee /tmp/startup.log'"
 
     ssh_base = [
         "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",

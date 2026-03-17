@@ -214,6 +214,10 @@ MODEL_BUILDERS: dict[str, callable] = {
     "vit_small": build_vit,
     "vit_base": build_vit,
     "prithvi_eo": build_generic,
+    # New architectures — all use the generic HuggingFace builder
+    "convnext_tiny": build_generic,
+    "efficientnet_b0": build_generic,
+    "swin_tiny": build_generic,
 }
 
 

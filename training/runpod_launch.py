@@ -82,16 +82,14 @@ _SCRIPT_PREAMBLE = (
     " echo \"Failed command: $BASH_COMMAND\";"
     " echo \"Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S')\";"
     " echo '==========================================';"
-    " echo \"$(date -u '+%Y-%m-%d %H:%M:%S') FATAL exit=$exit_code cmd=$BASH_COMMAND\""
-    " >> ${RUN_DIR:-/tmp}/startup.log 2>/dev/null;"
     " exit $exit_code; }"
     " ; trap '_on_err' ERR"
     " ; set -e"  # now enable -e after trap is installed
 )
 """Script preamble that installs an ERR trap before enabling set -e.
 
-Ensures the failing command is logged to startup.log on the network volume
-before the script exits, so we can debug terminated pods.
+Logging is handled externally by the tmux wrapper in _ssh_run_startup,
+which captures all output and copies it to the network volume.
 """
 
 
@@ -108,20 +106,15 @@ def _run_dir_cmd(cfg: "PipelineConfig", config_name: str, step: str) -> str:
     """Shell snippet that creates a timestamped run directory and exports RUN_DIR.
 
     Structure: runs/{config_stem}/{step}/{run_name}_{timestamp}/
-    Also redirects all subsequent stdout/stderr to $RUN_DIR/startup.log
-    (via exec) so that logs persist on the network volume even if the pod
-    is terminated unexpectedly.
     """
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     stem = config_name.removesuffix(".yaml")
     leaf = _run_dir_name(getattr(cfg, "run_name", ""))
     return (
-        f"RUN_DIR={code_dir}/runs/{stem}/{step}/{leaf}"
+        f"export RUN_DIR={code_dir}/runs/{stem}/{step}/{leaf}"
         f" && mkdir -p $RUN_DIR"
         f" && cp {code_dir}/configs/{config_name} $RUN_DIR/config.yaml"
         f" && ln -sfn $RUN_DIR {code_dir}/runs/{stem}/latest"
-        # Redirect all output to the network volume log (unbuffered via stdbuf)
-        f" && exec > >(stdbuf -oL tee -a $RUN_DIR/startup.log) 2>&1"
     )
 
 
@@ -139,10 +132,10 @@ def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
         _SCRIPT_PREAMBLE,
         _LOAD_RUNPOD_ENV,
         f"cd {code_dir}",
-        _run_dir_cmd(cfg, config_name, "candidates"),
-        f"echo '=== pod started, config={config_name} ==='",
     ]
     parts.extend(_build_clone_steps(cfg))
+    parts.append(_run_dir_cmd(cfg, config_name, "candidates"))
+    parts.append(f"echo '=== pod started, config={config_name} ==='")
     parts.append(
         f"[ -d {venv} ]"
         f" && echo 'farm-venv-cpu found, skipping install'"
@@ -172,10 +165,10 @@ def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
         _SCRIPT_PREAMBLE,
         _LOAD_RUNPOD_ENV,
         f"cd {code_dir}",
-        _run_dir_cmd(cfg, config_name, "patches"),
-        f"echo '=== pod started (patch extraction), config={config_name} ==='",
     ]
     parts.extend(_build_clone_steps(cfg))
+    parts.append(_run_dir_cmd(cfg, config_name, "patches"))
+    parts.append(f"echo '=== pod started (patch extraction), config={config_name} ==='")
     parts.append(
         f"[ -d {venv} ]"
         f" && echo 'farm-venv-cpu found, skipping install'"
@@ -203,8 +196,8 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
         _LOAD_RUNPOD_ENV,
         f"git config --global --add safe.directory {code_dir}",
         f"cd {code_dir}",
-        _run_dir_cmd(cfg, config_name, "pipeline"),
         "git pull --ff-only || true",
+        _run_dir_cmd(cfg, config_name, "pipeline"),
         f"[ -d {venv} ]"
         f" && echo 'farm-venv found, skipping install'"
         f" || (python -m venv {venv}"
@@ -328,9 +321,23 @@ def _ssh_run_startup(host: str, port: int, script: str) -> None:
     script_b64 = base64.b64encode(script.encode()).decode()
     write_cmd = f"echo '{script_b64}' | base64 -d > {remote_script} && chmod +x {remote_script}"
     setup_cmd = "which tmux >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1)"
-    # The script itself logs to $RUN_DIR/startup.log on the network volume via exec.
-    # Also mirror to /tmp for quick SSH access.
-    run_cmd = f"tmux new-session -d -s prep 'bash {remote_script} 2>&1 | tee /tmp/startup.log'"
+    # Log ALL output to /tmp/startup.log via tee, then always copy to the
+    # network volume run directory.  Uses bash (not source) so set -e inside
+    # the script doesn't kill the outer shell.  PIPESTATUS captures the exit
+    # code through the pipe.  The copy step runs unconditionally (;) so we
+    # get logs even on failure.
+    wrapper = (
+        f"stdbuf -oL bash {remote_script} 2>&1 | tee /tmp/startup.log ; "
+        f"EXIT_CODE=${{PIPESTATUS[0]}} ; "
+        # Find the latest run dir and copy log there
+        f"for d in /workspace/farm-mapping/runs/*/latest; do "
+        f"  TARGET=$(readlink -f \"$d\" 2>/dev/null) && "
+        f"  [ -d \"$TARGET\" ] && "
+        f"  cp /tmp/startup.log \"$TARGET/startup.log\" 2>/dev/null ; "
+        f"done ; "
+        f"exit $EXIT_CODE"
+    )
+    run_cmd = f"tmux new-session -d -s prep '{wrapper}'"
 
     ssh_base = [
         "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",

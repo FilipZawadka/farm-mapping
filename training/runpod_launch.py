@@ -110,11 +110,14 @@ def _run_dir_cmd(cfg: "PipelineConfig", config_name: str, step: str) -> str:
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     stem = config_name.removesuffix(".yaml")
     leaf = _run_dir_name(getattr(cfg, "run_name", ""))
+    nv_log = f"{code_dir}/runs/_latest_startup.log"
     return (
         f"export RUN_DIR={code_dir}/runs/{stem}/{step}/{leaf}"
         f" && mkdir -p $RUN_DIR"
         f" && cp {code_dir}/configs/{config_name} $RUN_DIR/config.yaml"
         f" && ln -sfn $RUN_DIR {code_dir}/runs/{stem}/latest"
+        # Symlink the live network-volume log into the run dir
+        f" && ln -sf {nv_log} $RUN_DIR/startup.log"
     )
 
 
@@ -321,21 +324,17 @@ def _ssh_run_startup(host: str, port: int, script: str) -> None:
     script_b64 = base64.b64encode(script.encode()).decode()
     write_cmd = f"echo '{script_b64}' | base64 -d > {remote_script} && chmod +x {remote_script}"
     setup_cmd = "which tmux >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1)"
-    # Log ALL output to /tmp/startup.log via tee, then always copy to the
-    # network volume run directory.  Uses bash (not source) so set -e inside
-    # the script doesn't kill the outer shell.  PIPESTATUS captures the exit
-    # code through the pipe.  The copy step runs unconditionally (;) so we
-    # get logs even on failure.
+    # Write log DIRECTLY to the network volume during execution, not after.
+    # The script creates $RUN_DIR on the network volume, so we tee into it
+    # in real-time.  We also keep /tmp as a fallback.
+    #
+    # Two-phase approach:
+    # 1. Run the script, tee to /tmp/startup.log (always works)
+    # 2. After EVERY line, append to network volume via a tail -f background process
+    nv_log = "/workspace/farm-mapping/runs/_latest_startup.log"
     wrapper = (
-        f"stdbuf -oL bash {remote_script} 2>&1 | tee /tmp/startup.log ; "
-        f"EXIT_CODE=${{PIPESTATUS[0]}} ; "
-        # Find the latest run dir and copy log there
-        f"for d in /workspace/farm-mapping/runs/*/latest; do "
-        f"  TARGET=$(readlink -f \"$d\" 2>/dev/null) && "
-        f"  [ -d \"$TARGET\" ] && "
-        f"  cp /tmp/startup.log \"$TARGET/startup.log\" 2>/dev/null ; "
-        f"done ; "
-        f"exit $EXIT_CODE"
+        f"stdbuf -oL bash {remote_script} 2>&1"
+        f" | stdbuf -oL tee /tmp/startup.log {nv_log}"
     )
     run_cmd = f"tmux new-session -d -s prep '{wrapper}'"
 

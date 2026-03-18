@@ -292,22 +292,30 @@ def _init_runpod(cfg: PipelineConfig):
     return runpod
 
 
-def _wait_for_ssh(pod_id: str, runpod, timeout: int = 120) -> tuple[str, int]:
-    """Poll until the pod exposes an SSH port. Returns (host, port)."""
+def _wait_for_ssh(pod_id: str, runpod, timeout: int = 600) -> tuple[str, int]:
+    """Poll until the pod exposes an SSH port. Returns (host, port).
+
+    GPU pods can take 5-10 minutes to provision, so default timeout is 10 min.
+    """
     import socket
-    deadline = time.time() + max(timeout, 300)  # at least 5 min for GPU pods
+    start = time.time()
+    deadline = start + timeout
     while time.time() < deadline:
         pod = runpod.get_pod(pod_id)
-        for port_info in (pod.get("runtime") or {}).get("ports", []):
-            if port_info.get("privatePort") == 22 and port_info.get("isIpPublic"):
-                host = port_info["ip"]
-                port = port_info["publicPort"]
-                # Wait until TCP port actually accepts connections
-                try:
-                    with socket.create_connection((host, port), timeout=5):
-                        return host, port
-                except OSError:
-                    pass
+        # Ports appear under runtime.ports as dicts
+        port_list = (pod.get("runtime") or {}).get("ports") or []
+        for port_info in port_list:
+            if isinstance(port_info, dict) \
+               and port_info.get("privatePort") == 22 \
+               and port_info.get("isIpPublic"):
+                    host = port_info["ip"]
+                    port = port_info["publicPort"]
+                    try:
+                        with socket.create_connection((host, port), timeout=5):
+                            return host, port
+                    except OSError:
+                        pass
+        log.info("  Waiting for SSH on pod %s ... (%ds elapsed)", pod_id, int(time.time() - start))
         time.sleep(10)
     raise TimeoutError(f"SSH not available on pod {pod_id} after {timeout}s")
 

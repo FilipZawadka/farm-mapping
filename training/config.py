@@ -66,8 +66,36 @@ def build_region_string(country_key: str, state: str) -> str:
     return country_key
 
 
+class BuildingFootprintProviderConfig(BaseModel):
+    """Config for a single building footprint data source."""
+    name: Literal["google_open_buildings", "ms_buildings", "auto"] = "auto"
+    min_area_m2: float = 500
+    max_area_m2: float = 50_000
+    min_confidence: float = 0.65  # Google Open Buildings only
+
+
+class BuildingFootprintConfig(BaseModel):
+    """Generate candidates from building footprint databases via Earth Engine.
+
+    Buildings near known farms become positives; the rest become negatives.
+    This produces harder negatives (real buildings) and more precise positives
+    (actual structures, not just point coordinates).
+    """
+    enabled: bool = False
+    provider: BuildingFootprintProviderConfig = Field(
+        default_factory=BuildingFootprintProviderConfig
+    )
+    proximity_radius_m: float = 200  # match building to farm if within this distance
+    cache_dir: str = "data/cache/building_footprints"
+    max_buildings_per_country: int = 50_000
+    tile_size_deg: float = 0.5  # for chunked EE queries
+
+
 class NegativeSamplingConfig(BaseModel):
-    strategy: Literal["random_rural", "hard_negative", "stratified", "osm_buildings"] = "random_rural"
+    strategy: Literal[
+        "random_rural", "hard_negative", "stratified",
+        "osm_buildings", "building_footprints",
+    ] = "random_rural"
     ratio: float = 1.0
     min_distance_m: float = 2000
     seed: int = 42
@@ -111,6 +139,9 @@ class DataConfig(BaseModel):
     )
     negative_sampling: NegativeSamplingConfig = Field(
         default_factory=NegativeSamplingConfig
+    )
+    building_footprints: BuildingFootprintConfig = Field(
+        default_factory=BuildingFootprintConfig
     )
 
     def all_regions(self) -> list[str]:
@@ -332,6 +363,9 @@ def resolve_paths(cfg: PipelineConfig, root: Optional[Path] = None) -> PipelineC
     )
     cfg.data.candidates_dir = str(
         (root / cfg.data.candidates_dir).resolve()
+    )
+    cfg.data.building_footprints.cache_dir = str(
+        (root / cfg.data.building_footprints.cache_dir).resolve()
     )
     if cfg.cache.enabled and cfg.cache.backend == "local":
         cfg.cache.local.base_path = str(

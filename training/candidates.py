@@ -290,6 +290,44 @@ NEGATIVE_STRATEGIES = {
 }
 
 
+def _building_footprint_candidates(
+    positives: gpd.GeoDataFrame,
+    cfg: DataConfig,
+    n_negatives: int,
+    _rng: np.random.Generator,
+) -> gpd.GeoDataFrame:
+    """Generate both positives and negatives from building footprint databases.
+
+    ALL candidates use BFD building centroids as their coordinates.
+    FTP/OSM data is used ONLY for labelling (which buildings are farms).
+    This ensures the model can't learn to distinguish the coordinate source.
+    """
+    from .building_footprints import fetch_building_candidates
+
+    bf_candidates = fetch_building_candidates(cfg, positives)
+    if len(bf_candidates) == 0:
+        log.warning("No building footprint candidates found, falling back to random_rural")
+        return _random_rural_negatives(positives, cfg, n_negatives, _rng)
+
+    # Balance: keep all positives, downsample negatives to match ratio
+    bf_pos = bf_candidates[bf_candidates["label"] == 1]
+    bf_neg = bf_candidates[bf_candidates["label"] == 0]
+
+    # Target: ratio * n_positives negatives (based on BFD positives, not FTP)
+    target_neg = int(len(bf_pos) * cfg.negative_sampling.ratio) if len(bf_pos) > 0 else n_negatives
+    if len(bf_neg) > target_neg:
+        bf_neg = bf_neg.sample(n=target_neg, random_state=cfg.negative_sampling.seed)
+
+    log.info(
+        "BFD balanced: %d positives, %d negatives (ratio=%.1f)",
+        len(bf_pos), len(bf_neg), cfg.negative_sampling.ratio,
+    )
+
+    return gpd.GeoDataFrame(
+        pd.concat([bf_pos, bf_neg], ignore_index=True), crs="EPSG:4326"
+    )
+
+
 def build_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     """Build a combined candidate GeoDataFrame (positives + negatives).
 
@@ -305,22 +343,35 @@ def build_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     rng = np.random.default_rng(cfg.data.negative_sampling.seed)
 
     strategy = cfg.data.negative_sampling.strategy
-    if strategy == "stratified":
+
+    if strategy == "building_footprints":
+        # ALL candidates come from building footprint centroids.
+        # FTP/OSM positives are used ONLY as labels, never as patch centres.
+        # This prevents the model from learning source-specific centering
+        # differences instead of actual farm features.
+        bf_candidates = _building_footprint_candidates(positives, cfg.data, n_neg, rng)
+        n_bf_pos = int((bf_candidates["label"] == 1).sum())
+        n_bf_neg = int((bf_candidates["label"] == 0).sum())
+        log.info("Building footprint candidates: %d positive, %d negative (all BFD-centred)", n_bf_pos, n_bf_neg)
+        combined = bf_candidates
+
+    elif strategy == "stratified":
         n_half = n_neg // 2
         neg_rural = _random_rural_negatives(positives, cfg.data, n_half, rng)
         neg_hard = _hard_negatives(positives, cfg.data, n_neg - n_half, rng)
         negatives = gpd.GeoDataFrame(
             pd.concat([neg_rural, neg_hard], ignore_index=True), crs="EPSG:4326"
         )
+        combined = gpd.GeoDataFrame(
+            pd.concat([positives, negatives], ignore_index=True), crs="EPSG:4326"
+        )
     else:
         neg_fn = NEGATIVE_STRATEGIES.get(strategy, _random_rural_negatives)
         negatives = neg_fn(positives, cfg.data, n_neg, rng)
-
-    log.info("Total negatives: %d", len(negatives))
-
-    combined = gpd.GeoDataFrame(
-        pd.concat([positives, negatives], ignore_index=True), crs="EPSG:4326"
-    )
+        log.info("Total negatives: %d", len(negatives))
+        combined = gpd.GeoDataFrame(
+            pd.concat([positives, negatives], ignore_index=True), crs="EPSG:4326"
+        )
 
     if "state" not in combined.columns:
         combined["state"] = ""

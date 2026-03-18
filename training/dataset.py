@@ -133,6 +133,39 @@ def _join_country_key_and_state(
     return keys, states
 
 
+def _country_split_map(
+    train_regions: list[str],
+    val_regions: list[str],
+    test_regions: list[str],
+) -> dict[str, str | None]:
+    """For each country key, determine which split it belongs to unambiguously.
+
+    A whole-country region (e.g. ``chile``) assigns that country to exactly one
+    split.  A country that only appears as sub-regions (e.g. ``united_states/OH``)
+    spans multiple splits, so stateless candidates must be distributed
+    proportionally — return ``None`` for those.
+    """
+    # Collect which splits each country's *whole-country* regions appear in
+    country_splits: dict[str, set[str]] = {}
+    for split_name, regions in [("train", train_regions), ("val", val_regions), ("test", test_regions)]:
+        for r in regions:
+            country, state = r.split("/", 1) if "/" in r else (r, None)
+            if state is None:
+                # Whole-country region → this country belongs to this split
+                country_splits.setdefault(country, set()).add(split_name)
+            else:
+                # Sub-region → mark country as spanning splits
+                country_splits.setdefault(country, set())
+
+    result: dict[str, str | None] = {}
+    for country, splits in country_splits.items():
+        if len(splits) == 1:
+            result[country] = next(iter(splits))
+        else:
+            result[country] = None  # ambiguous → distribute proportionally
+    return result
+
+
 def _assign_by_region(
     keys: pd.Series, states: pd.Series,
     train_regions: list[str],
@@ -141,24 +174,33 @@ def _assign_by_region(
 ) -> tuple[list[int], list[int], list[int]]:
     """Deterministically assign rows to splits by region membership.
 
-    Country-wide candidates (no state) match all regions, so they would be
-    claimed by every split.  We collect these separately and distribute them
-    proportionally across splits based on the region counts to avoid data
-    leakage and keep the class balance even.
+    Whole-country regions (e.g. ``chile``) assign all candidates from that
+    country to the configured split.  Country-wide candidates (no state) from
+    countries that span multiple splits (e.g. US negatives) are collected
+    separately and distributed proportionally.
     """
     train_idx: list[int] = []
     val_idx: list[int] = []
     test_idx: list[int] = []
     countrywide_idx: list[int] = []
 
-    all_regions = set(train_regions) | set(val_regions) | set(test_regions)
+    csm = _country_split_map(train_regions, val_regions, test_regions)
+    split_lists = {"train": train_idx, "val": val_idx, "test": test_idx}
 
     for i in range(len(keys)):
         k, s = str(keys.iloc[i]), str(states.iloc[i])
-        # Country-wide candidate (no state) that belongs to a configured country
-        if not s and any(k == r.split("/", 1)[0] for r in all_regions):
-            countrywide_idx.append(i)
-            continue
+
+        if not s:
+            # No state — check if country has a single unambiguous split
+            target = csm.get(k)
+            if target is not None:
+                split_lists[target].append(i)
+                continue
+            # Country spans multiple splits (e.g. US negatives) → defer
+            if k in csm:
+                countrywide_idx.append(i)
+                continue
+
         if matches_any_region(k, s, test_regions):
             test_idx.append(i)
         elif matches_any_region(k, s, val_regions):
@@ -171,17 +213,14 @@ def _assign_by_region(
         n_tr, n_va, n_te = len(train_idx), len(val_idx), len(test_idx)
         total = n_tr + n_va + n_te
         if total > 0:
-            # Deterministic shuffle so splits are reproducible
             countrywide_idx.sort()
             n = len(countrywide_idx)
             n_cw_te = max(1, round(n * n_te / total)) if n_te > 0 else 0
             n_cw_va = max(1, round(n * n_va / total)) if n_va > 0 else 0
-            n_cw_tr = n - n_cw_te - n_cw_va
             test_idx.extend(countrywide_idx[:n_cw_te])
             val_idx.extend(countrywide_idx[n_cw_te:n_cw_te + n_cw_va])
             train_idx.extend(countrywide_idx[n_cw_te + n_cw_va:])
         else:
-            # No state-specific candidates assigned yet; put all in train
             train_idx.extend(countrywide_idx)
 
     return train_idx, val_idx, test_idx

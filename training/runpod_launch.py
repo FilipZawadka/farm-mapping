@@ -246,7 +246,7 @@ def _build_create_kwargs(cfg: PipelineConfig, gpu_type: str, config_name: str) -
         "volume_mount_path": volume_mount,
         "ports": "22/tcp",
         "support_public_ip": True,
-        "env": {},
+        "env": {**_RUNPOD_SECRETS_ENV},
     }
     if cloud_type != "ALL":
         kwargs["cloud_type"] = cloud_type

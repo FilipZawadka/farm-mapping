@@ -383,16 +383,26 @@ def extract_patches(
 
 
 def _load_candidates_csv(candidates_dir: str, countries: list[str]) -> pd.DataFrame:
-    """Load candidate CSVs from ``{candidates_dir}/{country}.csv``."""
+    """Load candidate CSVs from ``{candidates_dir}/{country}.csv``.
+
+    If *countries* is empty, loads all CSV files in the directory.
+    """
+    cdir = Path(candidates_dir)
     frames: list[pd.DataFrame] = []
-    for country in countries:
-        csv_path = Path(candidates_dir) / f"{country}.csv"
-        if csv_path.exists():
+    if countries:
+        for country in countries:
+            csv_path = cdir / f"{country}.csv"
+            if csv_path.exists():
+                df = pd.read_csv(csv_path)
+                frames.append(df)
+                log.info("Loaded %d candidates from %s", len(df), csv_path)
+            else:
+                log.warning("Candidates file not found: %s", csv_path)
+    else:
+        for csv_path in sorted(cdir.glob("*.csv")):
             df = pd.read_csv(csv_path)
             frames.append(df)
             log.info("Loaded %d candidates from %s", len(df), csv_path)
-        else:
-            log.warning("Candidates file not found: %s", csv_path)
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)

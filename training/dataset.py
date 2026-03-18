@@ -307,11 +307,19 @@ def _random_split_indices(
 # ---------------------------------------------------------------------------
 
 def _load_candidates_csv(candidates_dir: str | Path, countries: list[str]) -> pd.DataFrame:
-    """Load candidate CSVs from ``{candidates_dir}/{country}.csv``."""
+    """Load candidate CSVs from ``{candidates_dir}/{country}.csv``.
+
+    If *countries* is empty, loads all CSV files in the directory.
+    """
+    cdir = Path(candidates_dir)
     frames: list[pd.DataFrame] = []
-    for country in countries:
-        csv_path = Path(candidates_dir) / f"{country}.csv"
-        if csv_path.exists():
+    if countries:
+        for country in countries:
+            csv_path = cdir / f"{country}.csv"
+            if csv_path.exists():
+                frames.append(pd.read_csv(csv_path))
+    else:
+        for csv_path in sorted(cdir.glob("*.csv")):
             frames.append(pd.read_csv(csv_path))
     if not frames:
         return pd.DataFrame()

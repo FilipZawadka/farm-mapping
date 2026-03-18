@@ -12,7 +12,7 @@ data/
 
 output/
 mlruns/
-notebooks_old/
+notebooks_local/
 *.npy
 *.pt
 *.pth

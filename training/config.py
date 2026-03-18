@@ -109,13 +109,16 @@ class NegativeSamplingConfig(BaseModel):
 
 
 class DataConfig(BaseModel):
-    countries: list[str] = ["thailand"]
-    species_filter: list[str] = ["Chickens", "Pigs", "Turkeys", "Ducks"]
-    categories_include: list[str] = ["Farm"]
+    countries: list[str] = Field(default_factory=list)
+    species_filter: list[str] = Field(default_factory=list)
+    categories_include: list[str] = Field(default_factory=list)
     train_regions: Optional[list[str]] = None
     val_regions: Optional[list[str]] = None
     test_regions: Optional[list[str]] = None
     candidates_dir: str = "data/candidates"
+    # Optional: load candidates directly from a parquet file instead of
+    # generating them from Farm Transparency / OSM / building footprints.
+    parquet_source: Optional[str] = None
     osm_farm_cache_dir: str = "data/cache/osm_farm_finder"
     osm_farm_tags: list[str] = Field(
         default_factory=lambda: [
@@ -367,6 +370,8 @@ def resolve_paths(cfg: PipelineConfig, root: Optional[Path] = None) -> PipelineC
     cfg.data.building_footprints.cache_dir = str(
         (root / cfg.data.building_footprints.cache_dir).resolve()
     )
+    if cfg.data.parquet_source:
+        cfg.data.parquet_source = str((root / cfg.data.parquet_source).resolve())
     if cfg.cache.enabled and cfg.cache.backend == "local":
         cfg.cache.local.base_path = str(
             (root / cfg.cache.local.base_path).resolve()

@@ -37,9 +37,11 @@ _GOOGLE_OB_COUNTRIES: set[str] = {
 }
 
 # Microsoft Buildings collection uses country display names
+# MS Buildings asset names use the country's display name with spaces.
+# Verify via: ee.data.listAssets("projects/sat-io/open-datasets/MSBuildings")
 _MS_COUNTRY_NAMES: dict[str, str] = {
-    "US": "UnitedStates",
-    "GB": "UnitedKingdom",
+    "US": "United States",
+    "GB": "United Kingdom",
     "AU": "Australia",
     "CA": "Canada",
     "DE": "Germany",
@@ -58,7 +60,7 @@ _MS_COUNTRY_NAMES: dict[str, str] = {
     "CO": "Colombia",
     "PE": "Peru",
     "VE": "Venezuela",
-    "ZA": "SouthAfrica",
+    "ZA": "South Africa",
     "NG": "Nigeria",
     "KE": "Kenya",
     "EG": "Egypt",
@@ -77,8 +79,8 @@ _MS_COUNTRY_NAMES: dict[str, str] = {
     "DK": "Denmark",
     "FI": "Finland",
     "JP": "Japan",
-    "KR": "SouthKorea",
-    "NZ": "NewZealand",
+    "KR": "South Korea",
+    "NZ": "New Zealand",
 }
 
 
@@ -185,11 +187,7 @@ class MSBuildingsProvider(BuildingProvider):
         **kwargs,
     ) -> list[dict]:
         collection_id = self._collection_id(iso_code)
-        try:
-            fc = ee.FeatureCollection(collection_id).filterBounds(geometry)
-        except ee.EEException as exc:
-            log.warning("MS Buildings collection not found for %s: %s", iso_code, exc)
-            return []
+        fc = ee.FeatureCollection(collection_id).filterBounds(geometry)
 
         # Compute area server-side and filter
         def _add_area(f):
@@ -214,6 +212,10 @@ class MSBuildingsProvider(BuildingProvider):
                 ["centroid_lat", "centroid_lon", "area_m2"],
             ).getInfo()
         except ee.EEException as exc:
+            msg = str(exc)
+            if "not found" in msg or "does not exist" in msg:
+                log.error("MS Buildings collection not found: %s", collection_id)
+                return None  # signals collection-level error, not just empty tile
             log.warning("MS Buildings query failed for tile: %s", exc)
             return []
 
@@ -297,6 +299,13 @@ def query_country_buildings(
     min_lon, min_lat, max_lon, max_lat = bounds
     all_buildings: list[dict] = []
 
+    # Validate the collection exists before tiling thousands of queries
+    test_geom = ee.Geometry.Rectangle([min_lon, min_lat, min_lon + tile_size_deg, min_lat + tile_size_deg])
+    test_result = provider.query_tile(test_geom, min_area_m2, max_area_m2, iso_code=iso_code)
+    if test_result is None:
+        log.error("  %s: provider returned None for test tile — collection likely not found", iso_code)
+        return []
+
     lats = np.arange(min_lat, max_lat, tile_size_deg)
     lons = np.arange(min_lon, max_lon, tile_size_deg)
     n_tiles = len(lats) * len(lons)
@@ -315,6 +324,10 @@ def query_country_buildings(
             buildings = provider.query_tile(
                 tile_geom, min_area_m2, max_area_m2, iso_code=iso_code,
             )
+            if buildings is None:
+                # Collection-level error (not found) — bail immediately
+                log.error("  %s: provider returned None — aborting", iso_code)
+                return all_buildings
             all_buildings.extend(buildings)
 
             if tile_idx % 20 == 0 or buildings:

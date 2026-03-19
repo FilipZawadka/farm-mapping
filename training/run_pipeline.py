@@ -91,7 +91,9 @@ def main() -> int:
     )
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--max-patches", type=int, default=None)
-    parser.add_argument("--skip", nargs="+", choices=[s[0] for s in _steps()], default=[])
+    all_step_names = [s[0] for s in _steps()]
+    parser.add_argument("--steps", nargs="+", choices=all_step_names, default=None,
+        help="Run only these steps (default: all). E.g. --steps train inference visualize")
     args = parser.parse_args()
 
     # Load config to get run_name
@@ -115,11 +117,11 @@ def main() -> int:
     log.info("Run directory: %s", run_dir)
     log.info("Config: %s", args.config)
 
+    steps_to_run = set(args.steps) if args.steps else set(all_step_names)
     config_arg = ["--config", args.config]
-    skip = set(args.skip)
 
     for name, cmd in _steps():
-        if name in skip:
+        if name not in steps_to_run:
             log.info("Skipping %s", name)
             continue
         full_cmd = cmd + config_arg

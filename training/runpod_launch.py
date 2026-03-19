@@ -153,11 +153,10 @@ def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
         parts.append(f"echo '=== running candidates ==='")
         parts.append(f"{py} -u -m training.candidates --config configs/{config_name}")
     parts.append(f"echo '=== DONE: candidates saved ==='")
+    script = " && ".join(parts)
     if getattr(cfg.runpod, "auto_terminate", True):
-        parts.append(
-            f"{py} -m training.auto_terminate"
-        )
-    return " && ".join(parts)
+        script += f" ; {py} -m training.auto_terminate"
+    return script
 
 
 def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
@@ -186,11 +185,10 @@ def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
     parts.append(f"echo '=== running patch extraction ==='")
     parts.append(f"{py} -u -m training.patch_extraction --config configs/{config_name}")
     parts.append(f"echo '=== DONE: patches saved to {code_dir}/data/patches/ ==='")
+    script = " && ".join(parts)
     if getattr(cfg.runpod, "auto_terminate", True):
-        parts.append(
-            f"{py} -m training.auto_terminate"
-        )
-    return " && ".join(parts)
+        script += f" ; {py} -m training.auto_terminate"
+    return script
 
 
 def _build_startup_script(cfg: PipelineConfig, config_name: str, skip_steps: list[str] | None = None) -> str:
@@ -214,9 +212,11 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, skip_steps: lis
         f"{py} -u -m training.run_pipeline --config configs/{config_name} --skip {' '.join(skip_steps or ['candidates', 'patch_extraction'])}",
         f"echo '=== DONE: training + inference + visualization complete ==='",
     ]
+    script = " && ".join(parts)
     if getattr(cfg.runpod, "auto_terminate", True):
-        parts.append(f"{py} -m training.auto_terminate")
-    return " && ".join(parts)
+        # Use ; so auto-terminate runs even if pipeline fails
+        script += f" ; {py} -m training.auto_terminate"
+    return script
 
 
 def _network_volume_id(cfg: PipelineConfig) -> str | None:

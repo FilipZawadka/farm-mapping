@@ -391,7 +391,13 @@ def build_splits(
         candidates["id"].astype(str),
         candidates["label"].astype(int),
     ))
-    meta["_label"] = meta["candidate_id"].astype(str).map(label_map).fillna(0).astype(int)
+    # Only keep patches that have a matching candidate — avoids leaking
+    # data from other configs that share the same patch_meta.csv.
+    valid_ids = set(candidates["id"].astype(str))
+    meta = meta[meta["candidate_id"].astype(str).isin(valid_ids)].reset_index(drop=True)
+    log.info("Filtered to %d patches matching config candidates", len(meta))
+
+    meta["_label"] = meta["candidate_id"].astype(str).map(label_map).astype(int)
 
     rng = np.random.default_rng(cfg.training.seed)
 

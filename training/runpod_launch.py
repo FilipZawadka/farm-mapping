@@ -193,7 +193,7 @@ def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
     return " && ".join(parts)
 
 
-def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
+def _build_startup_script(cfg: PipelineConfig, config_name: str, skip_steps: list[str] | None = None) -> str:
     """Startup script for a GPU pod: pull code, install deps, then run pipeline."""
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     venv = "/workspace/farm-venv"
@@ -211,7 +211,7 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str) -> str:
         f" || (python -m venv {venv}"
         f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)",
         f"echo '=== running pipeline ==='",
-        f"{py} -u -m training.run_pipeline --config configs/{config_name} --skip candidates patch_extraction",
+        f"{py} -u -m training.run_pipeline --config configs/{config_name} --skip {' '.join(skip_steps or ['candidates', 'patch_extraction'])}",
         f"echo '=== DONE: training + inference + visualization complete ==='",
     ]
     if getattr(cfg.runpod, "auto_terminate", True):
@@ -434,7 +434,7 @@ def launch_patch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml"
     return pod
 
 
-def launch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml") -> dict:
+def launch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml", skip_steps: list[str] | None = None) -> dict:
     """Provision a RunPod GPU pod and start the training container.
 
     Tries ``gpu_type`` first, then each entry in ``gpu_fallbacks`` until a pod
@@ -462,7 +462,7 @@ def launch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml") -> d
         ) from last_error
 
     pod_id = pod["id"]
-    startup_script = _build_startup_script(cfg, config_name)
+    startup_script = _build_startup_script(cfg, config_name, skip_steps=skip_steps)
     log.info("Waiting for SSH on pod %s ...", pod_id)
     host, port = _wait_for_ssh(pod_id, runpod)
     _ssh_run_startup(host, port, startup_script)
@@ -518,6 +518,8 @@ def main() -> None:
         help="CPU pod: generate candidates only")
     mode.add_argument("--patches", action="store_true",
         help="CPU pod: run patch extraction (candidates must already exist)")
+    parser.add_argument("--skip", nargs="+", default=None,
+        help="Pipeline steps to skip (e.g. --skip candidates patch_extraction train)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -529,7 +531,7 @@ def main() -> None:
     elif args.patches:
         pod = launch_patch_pod(cfg, config_name=config_name)
     else:
-        pod = launch_pod(cfg, config_name=config_name)
+        pod = launch_pod(cfg, config_name=config_name, skip_steps=args.skip)
 
     pod_id = pod.get("id")
 

@@ -137,6 +137,11 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
         if cand_parquet.exists():
             candidates = pd.read_parquet(cand_parquet)
 
+    # Filter meta to only patches matching this config's candidates
+    config_ids = set(candidates["id"].astype(str))
+    meta = meta[meta["candidate_id"].astype(str).isin(config_ids)].reset_index(drop=True)
+    log.info("Filtered to %d patches matching config candidates", len(meta))
+
     valid_ids = set(meta["candidate_id"].astype(str))
     cands_filtered = candidates[candidates["id"].astype(str).isin(valid_ids)].copy()
 

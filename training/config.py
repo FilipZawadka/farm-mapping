@@ -119,6 +119,11 @@ class DataConfig(BaseModel):
     # Optional: load candidates directly from a parquet file instead of
     # generating them from Farm Transparency / OSM / building footprints.
     parquet_source: Optional[str] = None
+    # Optional: extra parquet sources to merge with BFD/FTP candidates.
+    # Each path should be a parquet file with pre-labeled clusters.
+    extra_parquet_sources: list[str] = Field(default_factory=list)
+    # Include unlabeled clusters from parquet_source (for inference on all data)
+    include_unlabeled: bool = False
     osm_farm_cache_dir: str = "data/cache/osm_farm_finder"
     osm_farm_tags: list[str] = Field(
         default_factory=lambda: [
@@ -236,6 +241,88 @@ class ModelConfig(BaseModel):
     freeze_backbone_epochs: int = 3
 
 
+class AugFlipConfig(BaseModel):
+    enabled: bool = True
+    probability: float = 0.5
+
+
+class AugRotation90Config(BaseModel):
+    enabled: bool = True
+    probability: float = 0.75
+
+
+class AugContinuousRotationConfig(BaseModel):
+    enabled: bool = False
+    probability: float = 0.3
+    max_degrees: float = 15.0
+    fill_mode: Literal["reflect", "zero"] = "reflect"
+
+
+class AugResizedCropConfig(BaseModel):
+    enabled: bool = False
+    probability: float = 0.3
+    scale_min: float = 0.8
+    scale_max: float = 1.0
+
+
+class AugBrightnessConfig(BaseModel):
+    enabled: bool = True
+    probability: float = 0.5
+    range_min: float = 0.85
+    range_max: float = 1.15
+
+
+class AugPerBandJitterConfig(BaseModel):
+    enabled: bool = False
+    probability: float = 0.3
+    range_min: float = 0.95
+    range_max: float = 1.05
+
+
+class AugGaussianNoiseConfig(BaseModel):
+    enabled: bool = False
+    probability: float = 0.3
+    sigma: float = 0.02
+
+
+class AugChannelDropoutConfig(BaseModel):
+    enabled: bool = False
+    probability: float = 0.1
+    max_channels: int = 1
+
+
+class AugCutoutConfig(BaseModel):
+    enabled: bool = False
+    probability: float = 0.2
+    n_holes: int = 1
+    hole_size: int = 16
+
+
+class AugmentationConfig(BaseModel):
+    enabled: bool = True
+    horizontal_flip: AugFlipConfig = Field(default_factory=AugFlipConfig)
+    vertical_flip: AugFlipConfig = Field(default_factory=AugFlipConfig)
+    random_rotation_90: AugRotation90Config = Field(default_factory=AugRotation90Config)
+    continuous_rotation: AugContinuousRotationConfig = Field(
+        default_factory=AugContinuousRotationConfig
+    )
+    random_resized_crop: AugResizedCropConfig = Field(
+        default_factory=AugResizedCropConfig
+    )
+    brightness_jitter: AugBrightnessConfig = Field(default_factory=AugBrightnessConfig)
+    per_band_jitter: AugPerBandJitterConfig = Field(
+        default_factory=AugPerBandJitterConfig
+    )
+    gaussian_noise: AugGaussianNoiseConfig = Field(
+        default_factory=AugGaussianNoiseConfig
+    )
+    channel_dropout: AugChannelDropoutConfig = Field(
+        default_factory=AugChannelDropoutConfig
+    )
+    cutout: AugCutoutConfig = Field(default_factory=AugCutoutConfig)
+    recompute_indices: bool = False
+
+
 class TrainingConfig(BaseModel):
     epochs: int = 30
     batch_size: int = 32
@@ -251,6 +338,7 @@ class TrainingConfig(BaseModel):
     class_weight: Optional[list[float]] = None
     # Upsample minority regions so each country contributes equally per epoch
     upsample_minority_regions: bool = False
+    augmentation: AugmentationConfig = Field(default_factory=AugmentationConfig)
 
 
 class MLflowConfig(BaseModel):
@@ -372,6 +460,9 @@ def resolve_paths(cfg: PipelineConfig, root: Optional[Path] = None) -> PipelineC
     )
     if cfg.data.parquet_source:
         cfg.data.parquet_source = str((root / cfg.data.parquet_source).resolve())
+    cfg.data.extra_parquet_sources = [
+        str((root / p).resolve()) for p in cfg.data.extra_parquet_sources
+    ]
     if cfg.cache.enabled and cfg.cache.backend == "local":
         cfg.cache.local.base_path = str(
             (root / cfg.cache.local.base_path).resolve()

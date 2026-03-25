@@ -59,9 +59,14 @@ def _infer_us_state(lat: float, lng: float) -> str:
     return ""
 
 
-def convert(parquet_path: str | Path, candidates_dir: str | Path) -> pd.DataFrame:
+def convert(
+    parquet_path: str | Path,
+    candidates_dir: str | Path,
+    include_unlabeled: bool = False,
+) -> pd.DataFrame:
     """Convert parquet to candidate CSVs.
 
+    If *include_unlabeled* is True, keeps all clusters (unlabeled get label=-1).
     Returns the full DataFrame for inspection.
     """
     parquet_path = Path(parquet_path)
@@ -72,17 +77,26 @@ def convert(parquet_path: str | Path, candidates_dir: str | Path) -> pd.DataFram
     df = pd.read_parquet(parquet_path)
     log.info("Total clusters: %d", len(df))
 
-    # Filter to labelled, non-ambiguous
-    df = df[df["modified_label"].notna() & (df["modified_label"] != "Ambiguous")].copy()
-    log.info("Labelled (excl. Ambiguous): %d", len(df))
+    if include_unlabeled:
+        # Keep everything — unlabeled get label=-1
+        df = df[df["modified_label"] != "Ambiguous"].copy() if "modified_label" in df.columns else df.copy()
+        log.info("All clusters (excl. Ambiguous): %d", len(df))
+    else:
+        # Filter to labelled, non-ambiguous
+        df = df[df["modified_label"].notna() & (df["modified_label"] != "Ambiguous")].copy()
+        log.info("Labelled (excl. Ambiguous): %d", len(df))
 
     # Compute centroids
     df["geom"] = df["geometry"].apply(shapely.from_wkb)
     df["lat"] = df["geom"].apply(lambda g: g.centroid.y)
     df["lng"] = df["geom"].apply(lambda g: g.centroid.x)
 
-    # Binary label
-    df["label"] = df["modified_label"].apply(lambda x: 0 if x == "NotFarm" else 1)
+    # Binary label: farm=1, not-farm=0, unlabeled=-1
+    def _to_label(x):
+        if pd.isna(x):
+            return -1
+        return 0 if x == "NotFarm" else 1
+    df["label"] = df["modified_label"].apply(_to_label)
 
     # Map to our schema
     df["id"] = df["cluster_id"]

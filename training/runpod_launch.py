@@ -210,7 +210,7 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
         f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)",
         f"echo '=== running pipeline ==='",
         f"{py} -u -m training.run_pipeline --config configs/{config_name}"
-        + f" --steps {' '.join(steps or ['train', 'inference', 'visualize'])}",
+        + (f" --steps {' '.join(steps)}" if steps else ""),
         f"echo '=== DONE: training + inference + visualization complete ==='",
     ]
     script = " && ".join(parts)

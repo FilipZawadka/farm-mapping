@@ -378,6 +378,43 @@ def build_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     if "region" not in combined.columns:
         combined = _add_region_column(combined)
 
+    # Merge extra parquet sources (e.g. Rachel clusters)
+    extra_sources = getattr(cfg.data, "extra_parquet_sources", [])
+    if extra_sources:
+        from .rachel_to_candidates import convert as rachel_convert
+        for parquet_path in extra_sources:
+            if not Path(parquet_path).exists():
+                log.warning("Extra parquet source not found: %s — skipping", parquet_path)
+                continue
+            log.info("Merging extra parquet source: %s", parquet_path)
+            # Convert to candidates in a temp dir, then load
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmpdir:
+                extra_df = rachel_convert(parquet_path, tmpdir)
+            # Deduplicate by proximity: drop extra candidates within 200m of existing ones
+            from scipy.spatial import cKDTree
+            if len(combined) > 0 and len(extra_df) > 0:
+                existing_coords = np.deg2rad(combined[["lat", "lng"]].values)
+                extra_coords = np.deg2rad(extra_df[["lat", "lng"]].values)
+                tree = cKDTree(existing_coords)
+                R_EARTH = 6371000
+                radius_rad = 200 / R_EARTH  # 200m in radians
+                dists, _ = tree.query(extra_coords)
+                is_new = dists > radius_rad
+                n_dup = (~is_new).sum()
+                extra_df = extra_df[is_new].reset_index(drop=True)
+                log.info("  Deduplication: %d duplicates removed, %d new candidates added", n_dup, len(extra_df))
+            if len(extra_df) > 0:
+                extra_gdf = gpd.GeoDataFrame(
+                    extra_df,
+                    geometry=gpd.points_from_xy(extra_df["lng"], extra_df["lat"]),
+                    crs="EPSG:4326",
+                )
+                combined = gpd.GeoDataFrame(
+                    pd.concat([combined, extra_gdf], ignore_index=True), crs="EPSG:4326"
+                )
+                log.info("  Combined total: %d candidates", len(combined))
+
     return combined
 
 
@@ -421,6 +458,22 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S")
 
     cfg = resolve_paths(load_config(args.config))
+
+    # If parquet_source is set, use rachel_to_candidates instead
+    if getattr(cfg.data, "parquet_source", None):
+        from .rachel_to_candidates import convert
+        include_unlabeled = getattr(cfg.data, "include_unlabeled", False)
+        convert(cfg.data.parquet_source, cfg.data.candidates_dir, include_unlabeled=include_unlabeled)
+        return
+
+    # If no countries configured, skip (data may come from external source)
+    if not cfg.data.countries:
+        cdir = Path(cfg.data.candidates_dir)
+        if any(cdir.glob("*.csv")):
+            log.info("No countries configured but candidates exist in %s — skipping.", cdir)
+            return
+        raise ValueError("No countries configured and no existing candidates found.")
+
     candidates = build_candidates(cfg)
     save_candidates(candidates, cfg.data.candidates_dir, cfg.data.countries)
 

@@ -22,6 +22,61 @@ from .config import PipelineConfig, imagery_config_hash, matches_any_region, bui
 log = logging.getLogger(__name__)
 
 
+def _rotate_array(arr: np.ndarray, angle_deg: float, fill_mode: str) -> np.ndarray:
+    """Rotate (C, H, W) array by *angle_deg* degrees around center."""
+    from scipy.ndimage import rotate as ndimage_rotate
+    mode = "reflect" if fill_mode == "reflect" else "constant"
+    rotated = ndimage_rotate(arr, angle_deg, axes=(1, 2), reshape=False, mode=mode, order=1)
+    return rotated.astype(arr.dtype)
+
+
+def _random_resized_crop(
+    arr: np.ndarray, scale_min: float, scale_max: float, rng: np.random.Generator,
+) -> np.ndarray:
+    """Crop a random sub-region and resize back to original HxW."""
+    from scipy.ndimage import zoom as ndimage_zoom
+    _, h, w = arr.shape
+    scale = rng.uniform(scale_min, scale_max)
+    crop_h, crop_w = int(h * scale), int(w * scale)
+    top = rng.integers(0, h - crop_h + 1)
+    left = rng.integers(0, w - crop_w + 1)
+    cropped = arr[:, top:top + crop_h, left:left + crop_w]
+    zoom_h, zoom_w = h / crop_h, w / crop_w
+    resized = ndimage_zoom(cropped, (1, zoom_h, zoom_w), order=1)
+    # Ensure exact shape (zoom can be off by 1 pixel)
+    return resized[:, :h, :w].astype(arr.dtype)
+
+
+def _recompute_indices(arr: np.ndarray, n_spectral: int) -> np.ndarray:
+    """Recompute NDVI/NDBI/NDWI from augmented spectral bands.
+
+    Assumes band order: B2(0), B3(1), B4(2), B8(3), B11(4), B12(5).
+    Index order: NDVI(n), NDBI(n+1), NDWI(n+2).
+    """
+    eps = 1e-8
+    b3, b4, b8, b11 = arr[1], arr[2], arr[3], arr[4]
+    arr[n_spectral] = (b8 - b4) / (b8 + b4 + eps)       # NDVI
+    arr[n_spectral + 1] = (b11 - b8) / (b11 + b8 + eps)  # NDBI
+    arr[n_spectral + 2] = (b3 - b8) / (b3 + b8 + eps)    # NDWI
+    return arr
+
+
+def _cutout(
+    arr: np.ndarray, n_holes: int, hole_size: int, rng: np.random.Generator,
+) -> np.ndarray:
+    """Zero-fill rectangular holes in all channels."""
+    _, h, w = arr.shape
+    for _ in range(n_holes):
+        cy = rng.integers(0, h)
+        cx = rng.integers(0, w)
+        y1 = max(0, cy - hole_size // 2)
+        y2 = min(h, cy + hole_size // 2)
+        x1 = max(0, cx - hole_size // 2)
+        x2 = min(w, cx + hole_size // 2)
+        arr[:, y1:y2, x1:x2] = 0.0
+    return arr
+
+
 class PatchDataset(Dataset):
     """Loads pre-extracted .npy patches and binary labels.
 
@@ -36,12 +91,14 @@ class PatchDataset(Dataset):
         candidates: pd.DataFrame,
         patches_dir: Path,
         augment: bool = False,
+        aug_config: "AugmentationConfig | None" = None,
         rng_seed: int = 42,
         n_spectral_bands: int = 6,
     ):
         self.meta = meta.reset_index(drop=True)
         self.patches_dir = Path(patches_dir)
-        self.augment = augment
+        self.aug_config = aug_config
+        self.augment = augment or (aug_config is not None and aug_config.enabled)
         self.rng = np.random.default_rng(rng_seed)
         self.n_spectral_bands = n_spectral_bands
 
@@ -82,18 +139,79 @@ class PatchDataset(Dataset):
         return tensor, label
 
     def _augment(self, arr: np.ndarray) -> np.ndarray:
-        """Random flip + 90-degree rotation + brightness jitter (in-place safe)."""
-        if self.rng.random() < 0.5:
+        """Config-driven augmentation pipeline for multi-spectral satellite patches."""
+        cfg = self.aug_config
+        n_s = self.n_spectral_bands
+
+        # Fallback: if no config, use legacy defaults
+        if cfg is None:
+            if self.rng.random() < 0.5:
+                arr = np.flip(arr, axis=1).copy()
+            if self.rng.random() < 0.5:
+                arr = np.flip(arr, axis=2).copy()
+            k = self.rng.integers(0, 4)
+            if k > 0:
+                arr = np.rot90(arr, k=k, axes=(1, 2)).copy()
+            arr = arr * self.rng.uniform(0.9, 1.1)
+            return arr
+
+        # --- Geometric (all channels) ---
+        if cfg.horizontal_flip.enabled and self.rng.random() < cfg.horizontal_flip.probability:
             arr = np.flip(arr, axis=1).copy()
-        if self.rng.random() < 0.5:
+
+        if cfg.vertical_flip.enabled and self.rng.random() < cfg.vertical_flip.probability:
             arr = np.flip(arr, axis=2).copy()
 
-        k = self.rng.integers(0, 4)
-        if k > 0:
+        if cfg.random_rotation_90.enabled and self.rng.random() < cfg.random_rotation_90.probability:
+            k = self.rng.integers(1, 4)  # 1, 2, or 3
             arr = np.rot90(arr, k=k, axes=(1, 2)).copy()
 
-        jitter = self.rng.uniform(0.9, 1.1)
-        arr = arr * jitter
+        if cfg.continuous_rotation.enabled and self.rng.random() < cfg.continuous_rotation.probability:
+            angle = self.rng.uniform(
+                -cfg.continuous_rotation.max_degrees,
+                cfg.continuous_rotation.max_degrees,
+            )
+            arr = _rotate_array(arr, angle, cfg.continuous_rotation.fill_mode)
+
+        if cfg.random_resized_crop.enabled and self.rng.random() < cfg.random_resized_crop.probability:
+            arr = _random_resized_crop(
+                arr, cfg.random_resized_crop.scale_min,
+                cfg.random_resized_crop.scale_max, self.rng,
+            )
+
+        # --- Spectral (raw bands only, channels 0..n_s-1) ---
+        if cfg.brightness_jitter.enabled and self.rng.random() < cfg.brightness_jitter.probability:
+            factor = self.rng.uniform(cfg.brightness_jitter.range_min, cfg.brightness_jitter.range_max)
+            arr[:n_s] *= factor
+
+        if cfg.per_band_jitter.enabled and self.rng.random() < cfg.per_band_jitter.probability:
+            factors = self.rng.uniform(
+                cfg.per_band_jitter.range_min, cfg.per_band_jitter.range_max,
+                size=(n_s, 1, 1),
+            ).astype(np.float32)
+            arr[:n_s] *= factors
+
+        if cfg.gaussian_noise.enabled and self.rng.random() < cfg.gaussian_noise.probability:
+            noise = self.rng.normal(0, cfg.gaussian_noise.sigma, size=arr[:n_s].shape).astype(np.float32)
+            arr[:n_s] += noise
+
+        if cfg.channel_dropout.enabled and self.rng.random() < cfg.channel_dropout.probability:
+            n_drop = self.rng.integers(1, cfg.channel_dropout.max_channels + 1)
+            drop_idx = self.rng.choice(n_s, size=n_drop, replace=False)
+            arr[drop_idx] = 0.0
+
+        # Optionally recompute indices from augmented spectral bands
+        if cfg.recompute_indices and n_s > 0 and arr.shape[0] > n_s:
+            arr = _recompute_indices(arr, n_s)
+
+        # Cutout (all channels)
+        if cfg.cutout.enabled and self.rng.random() < cfg.cutout.probability:
+            arr = _cutout(arr, cfg.cutout.n_holes, cfg.cutout.hole_size, self.rng)
+
+        # Clamp to valid ranges
+        arr[:n_s] = np.clip(arr[:n_s], 0.0, 1.0)
+        if arr.shape[0] > n_s:
+            arr[n_s:] = np.clip(arr[n_s:], -1.0, 1.0)
 
         return arr
 
@@ -437,7 +555,8 @@ def build_splits(
 
     n_spectral = len(cfg.patches.bands)
 
-    train_ds = PatchDataset(meta_clean.iloc[train_idx], candidates, patches_root, augment=True, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
+    aug_cfg = getattr(cfg.training, "augmentation", None)
+    train_ds = PatchDataset(meta_clean.iloc[train_idx], candidates, patches_root, aug_config=aug_cfg, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
     val_ds = PatchDataset(meta_clean.iloc[val_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
     test_ds = PatchDataset(meta_clean.iloc[test_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
 

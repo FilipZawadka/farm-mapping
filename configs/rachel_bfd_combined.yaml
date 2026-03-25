@@ -1,0 +1,191 @@
+# ============================================================================
+# Rachel Clusters + BFD Buildings — Combined Training
+# ============================================================================
+# Combines:
+#   1. Rachel's pre-labeled building clusters (15k, high-quality manual labels)
+#   2. BFD buildings from 5 countries, filtered by min area, labeled via OSM/FTP
+#
+# BFD buildings are queried from Microsoft Global ML Building Footprints via
+# Earth Engine, filtered to >= 850 m², then labeled by proximity to Farm
+# Transparency + OSM farms.
+#
+# Rachel's clusters are merged after deduplication (200m proximity threshold).
+
+run_name: "rachel_bfd_combined_v1"
+
+data:
+  countries: [united_states, brazil, chile, mexico, thailand,argentina, south_africa]
+  species_filter: [Chickens, Pigs, Cattle, Turkeys, Ducks, Sheep, Goats]
+  categories_include: [Farm, "Farm (meat)", "Farm (eggs)", "Farm (dairy)"]
+  candidates_dir: data/candidates/rachel_bfd_combined
+  # Rachel clusters are merged as extra source (deduped by proximity)
+  extra_parquet_sources:
+    - data/rachel_geometry_candidates/selected_clusters_relabeled.parquet
+  osm_farm_cache_dir: data/cache/osm_farm_finder
+  train_regions:
+    - united_states/AL
+    - united_states/AK
+    - united_states/AZ
+    - united_states/AR
+    - united_states/CA
+    - united_states/CO
+    - united_states/CT
+    - united_states/DE
+    - united_states/FL
+    - united_states/GA
+    - united_states/HI
+    - united_states/ID
+    - united_states/IL
+    - united_states/IN
+    - united_states/IA
+    - united_states/KS
+    - united_states/KY
+    - united_states/LA
+    - united_states/ME
+    - united_states/MD
+    - united_states/MA
+    - united_states/MI
+    - united_states/MN
+    - united_states/MS
+    - united_states/MO
+    - united_states/MT
+    - united_states/NE
+    - united_states/NV
+    - united_states/NH
+    - united_states/NJ
+    - united_states/NM
+    - united_states/NY
+    - united_states/NC
+    - united_states/ND
+    - united_states/OH
+    - brazil
+    - chile
+    - mexico
+    - thailand
+  val_regions:
+    - united_states/OK
+    - united_states/OR
+    - united_states/PA
+    - united_states/RI
+    - united_states/SC
+    - united_states/SD
+    - united_states/TN
+    - united_states/TX
+    - argentina
+  test_regions:
+    - united_states/UT
+    - united_states/VT
+    - united_states/VA
+    - united_states/WA
+    - united_states/WV
+    - united_states/WI
+    - united_states/WY
+    - south_africa
+  negative_sampling:
+    strategy: building_footprints
+    ratio: 1.0
+    min_distance_m: 2000
+    seed: 42
+    osm_cache_dir: data/cache/osm_negatives
+  building_footprints:
+    enabled: true
+    provider:
+      name: auto
+      min_area_m2: 850
+      max_area_m2: 50000
+      min_confidence: 0.65
+    proximity_radius_m: 200
+    cache_dir: data/cache/building_footprints
+    max_buildings_per_country: 200000
+    tile_size_deg: 0.5
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches
+  num_workers: 4
+
+model:
+  architecture: resnet50
+  hub_name: microsoft/resnet-50
+  pretrained: true
+  num_classes: 2
+  input_channels: 9
+  freeze_backbone_epochs: 3
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 10
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+  class_weight: [1.0, 1.5]
+  upsample_minority_regions: true
+  augmentation:
+    enabled: true
+    horizontal_flip: { enabled: true, probability: 0.5 }
+    vertical_flip: { enabled: true, probability: 0.5 }
+    random_rotation_90: { enabled: true, probability: 0.75 }
+    continuous_rotation: { enabled: true, probability: 0.3, max_degrees: 15 }
+    random_resized_crop: { enabled: true, probability: 0.3, scale_min: 0.8, scale_max: 1.0 }
+    brightness_jitter: { enabled: true, probability: 0.5, range_min: 0.85, range_max: 1.15 }
+    per_band_jitter: { enabled: true, probability: 0.3, range_min: 0.95, range_max: 1.05 }
+    gaussian_noise: { enabled: true, probability: 0.3, sigma: 0.02 }
+    channel_dropout: { enabled: true, probability: 0.1, max_channels: 1 }
+    cutout: { enabled: false }
+    recompute_indices: false
+
+mlflow:
+  tracking_uri: ./mlruns
+  experiment_name: rachel_bfd_combined_v1
+  log_model: true
+
+runpod:
+  gpu_type: "NVIDIA RTX 4000 Ada Generation"
+  gpu_fallbacks:
+    - "NVIDIA RTX A4000"
+    - "NVIDIA RTX A5000"
+    - "NVIDIA RTX A4500"
+    - "NVIDIA GeForce RTX 4090"
+    - "NVIDIA L4"
+    - "NVIDIA A40"
+    - "NVIDIA GeForce RTX 3090"
+  cloud_type: "ALL"
+  docker_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+  volume_mount: /workspace
+  code_dir: /workspace/farm-mapping
+  github_repo: https://github.com/FilipZawadka/farm-mapping.git
+  github_branch: main
+  api_key_env: RUNPOD_API_KEY
+  network_volume_id: r8nyom4e4e
+  cpu_instance_id: "cpu3g-8-32"
+  cpu_fallbacks:
+    - "cpu3g-4-16"
+    - "cpu3c-8-16"
+    - "cpu3m-4-32"
+  auto_terminate: true
+
+inference:
+  checkpoint: data/output/rachel_bfd_combined/best_model.pt
+  threshold: 0.7
+  confidence_tiers:
+    high: 0.8
+    medium: 0.5
+    low: 0.3
+
+visualization:
+  output_dir: output/maps_rachel_bfd_combined
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: true

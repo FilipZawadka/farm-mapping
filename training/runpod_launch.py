@@ -146,13 +146,8 @@ def _build_prep_script(cfg: PipelineConfig, config_name: str) -> str:
         f" || (echo 'farm-venv-cpu not found, installing...' && python -m venv {venv}"
         f" && {venv}/bin/pip install --no-cache-dir -r requirements-cpu.txt)"
     )
-    # Use rachel_to_candidates if parquet_source is set, else normal candidates
-    if getattr(cfg.data, "parquet_source", None):
-        parts.append(f"echo '=== running rachel_to_candidates ==='")
-        parts.append(f"{py} -u -m training.rachel_to_candidates --config configs/{config_name}")
-    else:
-        parts.append(f"echo '=== running candidates ==='")
-        parts.append(f"{py} -u -m training.candidates --config configs/{config_name}")
+    parts.append(f"echo '=== running candidates ==='")
+    parts.append(f"{py} -u -m training.candidates --config configs/{config_name}")
     parts.append(f"echo '=== DONE: candidates saved ==='")
     script = " && ".join(parts)
     if getattr(cfg.runpod, "auto_terminate", True):

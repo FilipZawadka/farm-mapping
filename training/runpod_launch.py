@@ -51,8 +51,9 @@ def _build_clone_steps(cfg: PipelineConfig) -> list[str]:
     if repo:
         parts.append("which git >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq git)")
         parts.append(
-            f"git clone --branch {branch} --single-branch {repo} {code_dir}"
-            f" || (cd {code_dir} && git fetch origin && git reset --hard origin/{branch})"
+            f"if [ -d {code_dir}/.git ]; then"
+            f" cd {code_dir} && git fetch origin && git reset --hard origin/{branch};"
+            f" else git clone --branch {branch} --single-branch {repo} {code_dir}; fi"
         )
     else:
         # No repo configured — pull latest if already a git repo

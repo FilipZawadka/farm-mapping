@@ -1,21 +1,19 @@
 # ============================================================================
-# Rachel Clusters — Inference on ALL 71k clusters (including unlabeled)
+# Rachel Clusters v2 — Inspected clusters as held-out test set
 # ============================================================================
-# Uses the model trained on 15k labeled clusters to predict farm/not-farm
-# on all 71k clusters, including the ~56k that have no label.
+# Same data as rachel_clusters.yaml, but the 1,157 visually inspected clusters
+# (viz_status=inspected) are forced into the test set and excluded from training.
+# This gives the most reliable test evaluation since those labels are human-verified.
 #
-# Launch:
-#   python -m training.runpod_launch --config configs/rachel_clusters_inference_all.yaml --prep
-#   python -m training.runpod_launch --config configs/rachel_clusters_inference_all.yaml --patches
-#   python -m training.runpod_launch --config configs/rachel_clusters_inference_all.yaml --steps inference visualize
+# Train/val: ~14k non-inspected labeled clusters (random stratified split)
+# Test: ~1.2k inspected clusters (highest quality labels)
 
-run_name: "rachel_inference_all"
+run_name: "resnet50_rachel_v2_inspected_test"
 
 data:
-  countries: []
-  candidates_dir: data/rachel_geometry_candidates/candidates_all
+  candidates_dir: data/rachel_geometry_candidates/candidates
   parquet_source: data/rachel_geometry_candidates/selected_clusters_relabeled.parquet
-  include_unlabeled: true
+  inspected_as_test: true
 
 patches:
   patch_size_px: 128
@@ -34,7 +32,7 @@ model:
   pretrained: true
   num_classes: 2
   input_channels: 9
-  freeze_backbone_epochs: 3
+  freeze_backbone_epochs: 5
 
 training:
   epochs: 50
@@ -47,11 +45,25 @@ training:
   test_split: 0.15
   seed: 42
   mixed_precision: true
+  class_weight: [1.0, 1.5]
+  augmentation:
+    enabled: true
+    horizontal_flip: { enabled: true, probability: 0.5 }
+    vertical_flip: { enabled: true, probability: 0.5 }
+    random_rotation_90: { enabled: true, probability: 0.75 }
+    continuous_rotation: { enabled: true, probability: 0.3, max_degrees: 15 }
+    random_resized_crop: { enabled: true, probability: 0.3, scale_min: 0.8, scale_max: 1.0 }
+    brightness_jitter: { enabled: true, probability: 0.5, range_min: 0.85, range_max: 1.15 }
+    per_band_jitter: { enabled: true, probability: 0.3, range_min: 0.95, range_max: 1.05 }
+    gaussian_noise: { enabled: true, probability: 0.3, sigma: 0.02 }
+    channel_dropout: { enabled: true, probability: 0.1, max_channels: 1 }
+    cutout: { enabled: false }
+    recompute_indices: false
 
 mlflow:
   tracking_uri: ./mlruns
-  experiment_name: rachel_clusters_inference_all
-  log_model: false
+  experiment_name: rachel_clusters_v2
+  log_model: true
 
 runpod:
   gpu_type: "NVIDIA RTX 4000 Ada Generation"
@@ -71,16 +83,15 @@ runpod:
   github_branch: main
   api_key_env: RUNPOD_API_KEY
   network_volume_id: r8nyom4e4e
-  cpu_instance_id: "cpu3g-4-16"
+  cpu_instance_id: "cpu3g-8-32"
   cpu_fallbacks:
-    - "cpu3g-8-16"
-    - "cpu3c-4-32"
-    - "cpu3m-8-32"
+    - "cpu3g-4-16"
+    - "cpu3c-8-16"
+    - "cpu3m-4-32"
   auto_terminate: true
 
 inference:
-  # Use the model trained on labeled Rachel clusters
-  checkpoint: data/output/rachel_clusters/best_model.pt
+  checkpoint: data/output/rachel_clusters_v2/best_model.pt
   threshold: 0.5
   confidence_tiers:
     high: 0.8
@@ -88,7 +99,7 @@ inference:
     low: 0.3
 
 visualization:
-  output_dir: output/maps_rachel_all_inference
+  output_dir: output/maps_rachel_clusters_v2
   show_true_positives: true
   show_false_positives: true
   show_false_negatives: true

@@ -221,7 +221,7 @@ def train(cfg: PipelineConfig) -> Path:
             patches_dir = download_dir
             log.info("Using cached patches from %s", patches_dir)
 
-    train_ds, val_ds, test_ds = build_splits(cfg, patches_dir=patches_dir)
+    train_ds, val_ds, test_ds, inspected_ds = build_splits(cfg, patches_dir=patches_dir)
     bs = cfg.training.batch_size
 
     # Use weighted sampler when upsampling minority regions
@@ -239,6 +239,7 @@ def train(cfg: PipelineConfig) -> Path:
     train_loader = DataLoader(train_ds, batch_size=bs, shuffle=train_shuffle, sampler=train_sampler, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=bs, shuffle=False, num_workers=0)
+    inspected_loader = DataLoader(inspected_ds, batch_size=bs, shuffle=False, num_workers=0) if inspected_ds else None
 
     model = build_model(cfg.model).to(device)
     if cfg.model.freeze_backbone_epochs > 0:
@@ -261,9 +262,24 @@ def train(cfg: PipelineConfig) -> Path:
     mlflow.set_experiment(cfg.mlflow.experiment_name)
 
     with mlflow.start_run():
-        _log_mlflow_params(cfg, {"train_size": len(train_ds), "val_size": len(val_ds), "test_size": len(test_ds)})
+        extra_params = {"train_size": len(train_ds), "val_size": len(val_ds), "test_size": len(test_ds)}
+        if inspected_ds:
+            extra_params["inspected_size"] = len(inspected_ds)
+        _log_mlflow_params(cfg, extra_params)
         _run_epoch_loop(ctx, train_loader, val_loader)
         _save_test_results(model, test_loader, criterion, device, output_dir, best_path, cfg)
+
+        # Evaluate on inspected held-out set separately
+        if inspected_loader:
+            model.load_state_dict(torch.load(best_path, weights_only=True))
+            _, insp_metrics = _evaluate(model, inspected_loader, criterion, device)
+            mlflow.log_metrics({
+                f"inspected_{k}": v for k, v in insp_metrics.items() if isinstance(v, (int, float))
+            })
+            log.info("Inspected metrics: %s", insp_metrics)
+            insp_path = output_dir / "inspected_metrics.json"
+            import json
+            insp_path.write_text(json.dumps(insp_metrics, indent=2))
 
     return best_path
 

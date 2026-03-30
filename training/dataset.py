@@ -519,8 +519,41 @@ def build_splits(
 
     rng = np.random.default_rng(cfg.training.seed)
 
-    use_regions = bool(cfg.data.train_regions)
-    if use_regions:
+    # If inspected_as_test, hold out inspected candidates as a separate eval set
+    inspected_as_test = getattr(cfg.data, "inspected_as_test", False)
+    inspected_idx: list[int] = []
+    if inspected_as_test and "viz_status" in candidates.columns:
+        viz_map = dict(zip(candidates["id"].astype(str), candidates["viz_status"].fillna("")))
+        meta["_viz_status"] = meta["candidate_id"].astype(str).map(viz_map).fillna("")
+        inspected_mask = meta["_viz_status"] == "inspected"
+        inspected_idx = list(meta.index[inspected_mask])
+        remaining_idx = list(meta.index[~inspected_mask])
+        n_inspected = len(inspected_idx)
+        log.info("Inspected hold-out: %d candidates (excluded from train/val/test)", n_inspected)
+
+        # Split remaining into train/val/test normally
+        remaining_meta = meta.iloc[remaining_idx].reset_index(drop=True)
+        remaining_labels = remaining_meta["_label"].values
+        pos_idx = [i for i, l in enumerate(remaining_labels) if l == 1]
+        neg_idx = [i for i, l in enumerate(remaining_labels) if l == 0]
+        rng.shuffle(pos_idx)
+        rng.shuffle(neg_idx)
+        n_pte = int(len(pos_idx) * cfg.training.test_split)
+        n_nte = int(len(neg_idx) * cfg.training.test_split)
+        n_pv = int(len(pos_idx) * cfg.training.val_split)
+        n_nv = int(len(neg_idx) * cfg.training.val_split)
+        test_local = pos_idx[:n_pte] + neg_idx[:n_nte]
+        val_local = pos_idx[n_pte:n_pte + n_pv] + neg_idx[n_nte:n_nte + n_nv]
+        train_local = pos_idx[n_pte + n_pv:] + neg_idx[n_nte + n_nv:]
+        rng.shuffle(test_local)
+        rng.shuffle(val_local)
+        rng.shuffle(train_local)
+        # Map back to original meta indices
+        train_idx = [remaining_idx[i] for i in train_local]
+        val_idx = [remaining_idx[i] for i in val_local]
+        test_idx = [remaining_idx[i] for i in test_local]
+        meta.drop(columns=["_viz_status"], inplace=True)
+    elif bool(cfg.data.train_regions):
         train_idx, val_idx, test_idx = _region_split_indices(
             meta, candidates, cfg, rng,
         )
@@ -531,12 +564,14 @@ def build_splits(
 
     meta_clean = meta.drop(columns=["_label"])
 
+    split_mode = "inspected_holdout" if inspected_idx else ("region" if bool(cfg.data.train_regions) else "random")
     log.info(
-        "Splits (%s): train=%d  val=%d  test=%d  (pos ratio: %.2f)",
-        "region" if use_regions else "random",
+        "Splits (%s): train=%d  val=%d  test=%d  inspected=%d  (pos ratio: %.2f)",
+        split_mode,
         len(train_idx),
         len(val_idx),
         len(test_idx),
+        len(inspected_idx),
         meta["_label"].mean(),
     )
 
@@ -545,6 +580,8 @@ def build_splits(
     split_col.iloc[train_idx] = "train"
     split_col.iloc[val_idx] = "val"
     split_col.iloc[test_idx] = "test"
+    if inspected_idx:
+        split_col.iloc[inspected_idx] = "inspected"
     splits_df = meta_clean[["candidate_id"]].copy()
     splits_df["split"] = split_col
     splits_dir = patches_root / "splits"
@@ -560,13 +597,17 @@ def build_splits(
     val_ds = PatchDataset(meta_clean.iloc[val_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
     test_ds = PatchDataset(meta_clean.iloc[test_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
 
+    inspected_ds = None
+    if inspected_idx:
+        inspected_ds = PatchDataset(meta_clean.iloc[inspected_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
+
     # Compute per-sample weights for region upsampling
     if cfg.training.upsample_minority_regions:
         train_ds.sample_weights = _compute_region_weights(
             meta_clean.iloc[train_idx], candidates,
         )
 
-    return train_ds, val_ds, test_ds
+    return train_ds, val_ds, test_ds, inspected_ds
 
 
 def _compute_region_weights(

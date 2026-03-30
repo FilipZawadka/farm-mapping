@@ -122,9 +122,13 @@ def convert(
         build_region_string(k, s) for k, s in zip(df["country_key"], df["state"])
     ]
 
+    # Pass through viz_status for test set splitting
+    if "viz_status" in df.columns:
+        df["viz_status"] = df["viz_status"].fillna("")
+
     # Keep candidate columns
     keep = ["id", "name", "lat", "lng", "species", "category", "source",
-            "country", "state", "label", "region",
+            "country", "state", "label", "region", "viz_status",
             "num_bldgs", "total_area_m2", "median_area", "template_score_if"]
     out_df = df[[c for c in keep if c in df.columns]].copy()
 

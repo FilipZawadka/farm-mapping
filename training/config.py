@@ -124,6 +124,9 @@ class DataConfig(BaseModel):
     extra_parquet_sources: list[str] = Field(default_factory=list)
     # Include unlabeled clusters from parquet_source (for inference on all data)
     include_unlabeled: bool = False
+    # Force candidates with viz_status=inspected into test set (excluded from train/val).
+    # Remaining labeled data is split into train/val normally.
+    inspected_as_test: bool = False
     osm_farm_cache_dir: str = "data/cache/osm_farm_finder"
     osm_farm_tags: list[str] = Field(
         default_factory=lambda: [

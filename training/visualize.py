@@ -229,11 +229,11 @@ def _build_split_layer_js(split_name: str, subset: gpd.GeoDataFrame, n: int) -> 
 
 
 def _build_split_layers(scored: gpd.GeoDataFrame):
-    """Build toggleable layers for train/val/test, points colored by pred_class."""
+    """Build toggleable layers for train/val/test/inspected, points colored by pred_class."""
     if "split" not in scored.columns:
         return ""
     layers_js = ""
-    for split in ("train", "val", "test"):
+    for split in ("train", "val", "test", "inspected"):
         subset = scored[scored["split"] == split]
         if len(subset) == 0:
             continue

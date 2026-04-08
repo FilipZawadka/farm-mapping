@@ -521,7 +521,12 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = resolve_paths(load_config(args.config))
-    config_name = os.path.basename(args.config)
+    # Preserve subdirectory structure (e.g. "rachel_clusters/rachel_baseline.yaml")
+    config_path = args.config
+    if config_path.startswith("configs/"):
+        config_name = config_path[len("configs/"):]
+    else:
+        config_name = os.path.basename(config_path)
 
     if args.prep:
         pod = launch_prep_pod(cfg, config_name=config_name)

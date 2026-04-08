@@ -94,6 +94,8 @@ class PatchDataset(Dataset):
         aug_config: "AugmentationConfig | None" = None,
         rng_seed: int = 42,
         n_spectral_bands: int = 6,
+        channel_indices: list[int] | None = None,
+        crop_size: int | None = None,
     ):
         self.meta = meta.reset_index(drop=True)
         self.patches_dir = Path(patches_dir)
@@ -101,6 +103,8 @@ class PatchDataset(Dataset):
         self.augment = augment or (aug_config is not None and aug_config.enabled)
         self.rng = np.random.default_rng(rng_seed)
         self.n_spectral_bands = n_spectral_bands
+        self.channel_indices = channel_indices
+        self.crop_size = crop_size
 
         label_map = dict(zip(
             candidates["id"].astype(str),
@@ -133,6 +137,17 @@ class PatchDataset(Dataset):
 
         if self.augment:
             arr = self._augment(arr)
+
+        # Center-crop to smaller spatial extent (after augmentation)
+        if self.crop_size is not None:
+            _, h, w = arr.shape
+            y = (h - self.crop_size) // 2
+            x = (w - self.crop_size) // 2
+            arr = arr[:, y:y + self.crop_size, x:x + self.crop_size].copy()
+
+        # Select channel subset (after scaling + augmentation)
+        if self.channel_indices is not None:
+            arr = arr[self.channel_indices].copy()
 
         tensor = torch.from_numpy(arr)
         label = int(self.labels[idx])
@@ -592,14 +607,30 @@ def build_splits(
 
     n_spectral = len(cfg.patches.bands)
 
+    # Resolve channel subset and crop size for ablation experiments
+    channel_indices = None
+    channel_subset = getattr(cfg.training, "channel_subset", None)
+    if channel_subset:
+        from .config import resolve_channel_indices
+        channel_indices, n_spectral = resolve_channel_indices(
+            channel_subset, cfg.patches.bands, cfg.patches.indices,
+        )
+        log.info("Channel subset %s -> indices %s (%d spectral)", channel_subset, channel_indices, n_spectral)
+    crop_size = getattr(cfg.training, "crop_center_px", None)
+    if crop_size:
+        log.info("Center crop: %dx%d pixels", crop_size, crop_size)
+
+    ds_kwargs = dict(rng_seed=cfg.training.seed, n_spectral_bands=n_spectral,
+                     channel_indices=channel_indices, crop_size=crop_size)
+
     aug_cfg = getattr(cfg.training, "augmentation", None)
-    train_ds = PatchDataset(meta_clean.iloc[train_idx], candidates, patches_root, aug_config=aug_cfg, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
-    val_ds = PatchDataset(meta_clean.iloc[val_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
-    test_ds = PatchDataset(meta_clean.iloc[test_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
+    train_ds = PatchDataset(meta_clean.iloc[train_idx], candidates, patches_root, aug_config=aug_cfg, **ds_kwargs)
+    val_ds = PatchDataset(meta_clean.iloc[val_idx], candidates, patches_root, augment=False, **ds_kwargs)
+    test_ds = PatchDataset(meta_clean.iloc[test_idx], candidates, patches_root, augment=False, **ds_kwargs)
 
     inspected_ds = None
     if inspected_idx:
-        inspected_ds = PatchDataset(meta_clean.iloc[inspected_idx], candidates, patches_root, augment=False, rng_seed=cfg.training.seed, n_spectral_bands=n_spectral)
+        inspected_ds = PatchDataset(meta_clean.iloc[inspected_idx], candidates, patches_root, augment=False, **ds_kwargs)
 
     # Compute per-sample weights for region upsampling
     if cfg.training.upsample_minority_regions:

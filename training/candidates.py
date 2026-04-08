@@ -462,8 +462,14 @@ def main() -> None:
     # If parquet_source is set, use rachel_to_candidates instead
     if getattr(cfg.data, "parquet_source", None):
         from .rachel_to_candidates import convert
-        include_unlabeled = getattr(cfg.data, "include_unlabeled", False)
-        convert(cfg.data.parquet_source, cfg.data.candidates_dir, include_unlabeled=include_unlabeled)
+        convert(
+            cfg.data.parquet_source,
+            cfg.data.candidates_dir,
+            include_unlabeled=getattr(cfg.data, "include_unlabeled", False),
+            label_mode=getattr(cfg.data, "label_mode", "binary"),
+            exclude_labels=getattr(cfg.data, "exclude_labels", None) or None,
+            exclude_osm_farms=getattr(cfg.data, "exclude_osm_farms", False),
+        )
         return
 
     # If no countries configured, skip (data may come from external source)

@@ -114,7 +114,7 @@ def _step_scheduler(scheduler, cfg: PipelineConfig, val_loss: float) -> None:
 
 
 def _log_mlflow_params(cfg: PipelineConfig, sizes: dict) -> None:
-    mlflow.log_params({
+    params = {
         "architecture": cfg.model.architecture,
         "hub_name": cfg.model.hub_name,
         "input_channels": cfg.model.input_channels,
@@ -128,7 +128,14 @@ def _log_mlflow_params(cfg: PipelineConfig, sizes: dict) -> None:
         "scheduler": cfg.training.scheduler,
         "freeze_backbone_epochs": cfg.model.freeze_backbone_epochs,
         **sizes,
-    })
+    }
+    channel_subset = getattr(cfg.training, "channel_subset", None)
+    if channel_subset:
+        params["channel_subset"] = ",".join(channel_subset)
+    crop_px = getattr(cfg.training, "crop_center_px", None)
+    if crop_px:
+        params["crop_center_px"] = crop_px
+    mlflow.log_params(params)
 
 
 def _save_test_results(
@@ -240,6 +247,14 @@ def train(cfg: PipelineConfig) -> Path:
     val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=bs, shuffle=False, num_workers=0)
     inspected_loader = DataLoader(inspected_ds, batch_size=bs, shuffle=False, num_workers=0) if inspected_ds else None
+
+    # Compute effective input_channels from channel_subset (ablation support)
+    channel_subset = getattr(cfg.training, "channel_subset", None)
+    if channel_subset:
+        from .config import resolve_channel_indices
+        _, n_spectral = resolve_channel_indices(channel_subset, cfg.patches.bands, cfg.patches.indices)
+        cfg.model.input_channels = len(channel_subset)
+        log.info("Channel subset: %s -> input_channels=%d", channel_subset, cfg.model.input_channels)
 
     model = build_model(cfg.model).to(device)
     if cfg.model.freeze_backbone_epochs > 0:

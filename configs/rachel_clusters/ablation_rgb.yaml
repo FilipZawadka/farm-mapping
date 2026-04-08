@@ -1,14 +1,9 @@
 # ============================================================================
-# Rachel Clusters v2 — Inspected clusters as held-out test set
+# Baseline — Farm vs NotFarm, no class weighting, country-weighted sampling
 # ============================================================================
-# Same data as rachel_clusters.yaml, but the 1,157 visually inspected clusters
-# (viz_status=inspected) are forced into the test set and excluded from training.
-# This gives the most reliable test evaluation since those labels are human-verified.
-#
-# Train/val: ~14k non-inspected labeled clusters (random stratified split)
-# Test: ~1.2k inspected clusters (highest quality labels)
+# Compare against: rachel_baseline_cw, rachel_baseline_cw_rev, rachel_poultry_v1
 
-run_name: "resnet50_rachel_v2_inspected_test"
+run_name: "ablation_rgb"
 
 data:
   candidates_dir: data/rachel_geometry_candidates/candidates
@@ -45,7 +40,8 @@ training:
   test_split: 0.15
   seed: 42
   mixed_precision: true
-  class_weight: [1.0, 1.5]
+  upsample_minority_regions: true
+  channel_subset: [B2, B3, B4]
   augmentation:
     enabled: true
     horizontal_flip: { enabled: true, probability: 0.5 }
@@ -62,7 +58,7 @@ training:
 
 mlflow:
   tracking_uri: ./mlruns
-  experiment_name: rachel_clusters_v2
+  experiment_name: ablation_rgb
   log_model: true
 
 runpod:
@@ -91,15 +87,15 @@ runpod:
   auto_terminate: true
 
 inference:
-  checkpoint: data/output/rachel_clusters_v2/best_model.pt
-  threshold: 0.5
+  checkpoint: data/output/ablation_rgb/best_model.pt
+  threshold: 0.7
   confidence_tiers:
-    high: 0.8
-    medium: 0.5
-    low: 0.3
+    high: 0.9
+    medium: 0.7
+    low: 0.4
 
 visualization:
-  output_dir: output/maps_rachel_clusters_v2
+  output_dir: output/maps_ablation_rgb
   show_true_positives: true
   show_false_positives: true
   show_false_negatives: true

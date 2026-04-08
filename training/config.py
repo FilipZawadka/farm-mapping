@@ -125,8 +125,13 @@ class DataConfig(BaseModel):
     # Include unlabeled clusters from parquet_source (for inference on all data)
     include_unlabeled: bool = False
     # Force candidates with viz_status=inspected into test set (excluded from train/val).
-    # Remaining labeled data is split into train/val normally.
     inspected_as_test: bool = False
+    # Label mode: "binary" (farm=1, not-farm=0) or "poultry" (poultry=1, else=0)
+    label_mode: str = "binary"
+    # Drop rows with these modified_label values entirely
+    exclude_labels: list[str] = Field(default_factory=list)
+    # Drop rows where original_label contains "OSM" and row appears to be a farm
+    exclude_osm_farms: bool = False
     osm_farm_cache_dir: str = "data/cache/osm_farm_finder"
     osm_farm_tags: list[str] = Field(
         default_factory=lambda: [
@@ -199,6 +204,31 @@ class PatchConfig(BaseModel):
     @property
     def patch_extent_m(self) -> float:
         return self.patch_size_px * self.resolution_m
+
+
+def resolve_channel_indices(
+    channel_subset: list[str],
+    all_bands: list[str],
+    all_indices: list[str],
+) -> tuple[list[int], int]:
+    """Convert channel names to positional indices in the .npy array.
+
+    Returns (channel_indices, n_spectral_in_subset).
+    Band order in .npy: bands[0..n-1], indices[n..n+m-1].
+    Example: ["B2","B3","B4","NDWI"] with bands=[B2..B12], indices=[NDVI,NDBI,NDWI]
+             -> ([0, 1, 2, 8], 3)
+    """
+    indices: list[int] = []
+    n_spectral = 0
+    for ch in channel_subset:
+        if ch in all_bands:
+            indices.append(all_bands.index(ch))
+            n_spectral += 1
+        elif ch in all_indices:
+            indices.append(len(all_bands) + all_indices.index(ch))
+        else:
+            raise ValueError(f"Channel {ch!r} not in bands {all_bands} or indices {all_indices}")
+    return indices, n_spectral
 
 
 def imagery_config_hash(patch_cfg: PatchConfig) -> str:
@@ -342,6 +372,12 @@ class TrainingConfig(BaseModel):
     # Upsample minority regions so each country contributes equally per epoch
     upsample_minority_regions: bool = False
     augmentation: AugmentationConfig = Field(default_factory=AugmentationConfig)
+    # Ablation: use only a subset of channels at training time (by band name).
+    # None = use all channels from patches. E.g. ["B2","B3","B4","NDWI"] for RGB+NDWI.
+    channel_subset: Optional[list[str]] = None
+    # Ablation: center-crop patches to this size (pixels) at training time.
+    # None = use full patch_size_px. E.g. 64 for 640m context instead of 1.28km.
+    crop_center_px: Optional[int] = None
 
 
 class MLflowConfig(BaseModel):

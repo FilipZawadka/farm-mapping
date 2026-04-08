@@ -1,0 +1,102 @@
+# ============================================================================
+# Baseline — Farm vs NotFarm, no class weighting, country-weighted sampling
+# ============================================================================
+# Compare against: rachel_baseline_cw, rachel_baseline_cw_rev, rachel_poultry_v1
+
+run_name: "ablation_6bands"
+
+data:
+  candidates_dir: data/rachel_geometry_candidates/candidates
+  parquet_source: data/rachel_geometry_candidates/selected_clusters_relabeled.parquet
+  inspected_as_test: true
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches
+  num_workers: 4
+
+model:
+  architecture: resnet50
+  hub_name: microsoft/resnet-50
+  pretrained: true
+  num_classes: 2
+  input_channels: 9
+  freeze_backbone_epochs: 5
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 10
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+  upsample_minority_regions: true
+  channel_subset: [B2, B3, B4, B8, B11, B12]
+  augmentation:
+    enabled: true
+    horizontal_flip: { enabled: true, probability: 0.5 }
+    vertical_flip: { enabled: true, probability: 0.5 }
+    random_rotation_90: { enabled: true, probability: 0.75 }
+    continuous_rotation: { enabled: true, probability: 0.3, max_degrees: 15 }
+    random_resized_crop: { enabled: true, probability: 0.3, scale_min: 0.8, scale_max: 1.0 }
+    brightness_jitter: { enabled: true, probability: 0.5, range_min: 0.85, range_max: 1.15 }
+    per_band_jitter: { enabled: true, probability: 0.3, range_min: 0.95, range_max: 1.05 }
+    gaussian_noise: { enabled: true, probability: 0.3, sigma: 0.02 }
+    channel_dropout: { enabled: true, probability: 0.1, max_channels: 1 }
+    cutout: { enabled: false }
+    recompute_indices: false
+
+mlflow:
+  tracking_uri: ./mlruns
+  experiment_name: ablation_6bands
+  log_model: true
+
+runpod:
+  gpu_type: "NVIDIA RTX 4000 Ada Generation"
+  gpu_fallbacks:
+    - "NVIDIA RTX A4000"
+    - "NVIDIA RTX A5000"
+    - "NVIDIA RTX A4500"
+    - "NVIDIA GeForce RTX 4090"
+    - "NVIDIA L4"
+    - "NVIDIA A40"
+    - "NVIDIA GeForce RTX 3090"
+  cloud_type: "ALL"
+  docker_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+  volume_mount: /workspace
+  code_dir: /workspace/farm-mapping
+  github_repo: https://github.com/FilipZawadka/farm-mapping.git
+  github_branch: main
+  api_key_env: RUNPOD_API_KEY
+  network_volume_id: r8nyom4e4e
+  cpu_instance_id: "cpu3g-8-32"
+  cpu_fallbacks:
+    - "cpu3g-4-16"
+    - "cpu3c-8-16"
+    - "cpu3m-4-32"
+  auto_terminate: true
+
+inference:
+  checkpoint: data/output/ablation_6bands/best_model.pt
+  threshold: 0.7
+  confidence_tiers:
+    high: 0.9
+    medium: 0.7
+    low: 0.4
+
+visualization:
+  output_dir: output/maps_ablation_6bands
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: true

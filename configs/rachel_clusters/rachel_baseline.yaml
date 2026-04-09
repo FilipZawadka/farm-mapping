@@ -3,7 +3,7 @@
 # ============================================================================
 # Compare against: rachel_baseline_cw, rachel_baseline_cw_rev, rachel_poultry_v1
 
-run_name: "baseline"
+run_name: "baseline_v2"
 
 data:
   candidates_dir: data/rachel_geometry_candidates/candidates
@@ -11,7 +11,7 @@ data:
   inspected_as_test: true
 
 patches:
-  patch_size_px: 128
+  patch_size_px: 64
   resolution_m: 10
   bands: [B2, B3, B4, B8, B11, B12]
   indices: [NDVI, NDBI, NDWI]
@@ -41,6 +41,7 @@ training:
   seed: 42
   mixed_precision: true
   upsample_minority_regions: true
+  balanced_country_splits: true
   augmentation:
     enabled: true
     horizontal_flip: { enabled: true, probability: 0.5 }

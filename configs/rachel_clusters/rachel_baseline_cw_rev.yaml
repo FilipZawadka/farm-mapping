@@ -41,6 +41,7 @@ training:
   seed: 42
   mixed_precision: true
   upsample_minority_regions: true
+  balanced_country_splits: true
   class_weight: [1.5, 1.0]
   augmentation:
     enabled: true

@@ -47,6 +47,7 @@ training:
   test_split: 0.15
   seed: 42
   mixed_precision: true
+  balanced_country_splits: true
 
 mlflow:
   tracking_uri: ./mlruns

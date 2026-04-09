@@ -435,6 +435,58 @@ def _random_split_indices(
     return train_idx, val_idx, test_idx
 
 
+def _country_balanced_split_indices(
+    meta: pd.DataFrame,
+    candidates: pd.DataFrame,
+    cfg: PipelineConfig,
+    rng: np.random.Generator,
+) -> tuple[list[int], list[int], list[int]]:
+    """Split so val and test have equal samples from each country.
+
+    The number of samples per country in val/test is determined by the
+    smallest country: ``n_per_country = int(min_country_size * split_frac)``.
+    Every country contributes exactly that many samples to val and test.
+    The rest goes to train (larger countries contribute more to train).
+    """
+    cid_to_country = dict(zip(
+        candidates["id"].astype(str),
+        candidates["country"].astype(str) if "country" in candidates.columns else "",
+    ))
+    meta_countries = meta["candidate_id"].astype(str).map(cid_to_country).fillna("unknown")
+
+    # Group indices by country
+    country_groups: dict[str, list[int]] = {}
+    for country in sorted(meta_countries.unique()):
+        indices = meta.index[meta_countries == country].tolist()
+        rng.shuffle(indices)
+        country_groups[country] = indices
+
+    # Determine samples per country from the smallest country
+    min_country_size = min(len(v) for v in country_groups.values())
+    n_val_per = max(1, int(min_country_size * cfg.training.val_split))
+    n_test_per = max(1, int(min_country_size * cfg.training.test_split))
+
+    train_idx, val_idx, test_idx = [], [], []
+    for country, indices in country_groups.items():
+        test_idx.extend(indices[:n_test_per])
+        val_idx.extend(indices[n_test_per:n_test_per + n_val_per])
+        train_idx.extend(indices[n_test_per + n_val_per:])
+
+    rng.shuffle(train_idx)
+    rng.shuffle(val_idx)
+    rng.shuffle(test_idx)
+
+    n_countries = len(country_groups)
+    log.info(
+        "Country-balanced splits: %d countries, %d val/country, %d test/country "
+        "(from smallest=%d, val_split=%.2f, test_split=%.2f)",
+        n_countries, n_val_per, n_test_per,
+        min_country_size, cfg.training.val_split, cfg.training.test_split,
+    )
+
+    return train_idx, val_idx, test_idx
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -546,30 +598,45 @@ def build_splits(
         n_inspected = len(inspected_idx)
         log.info("Inspected hold-out: %d candidates (excluded from train/val/test)", n_inspected)
 
-        # Split remaining into train/val/test normally
-        remaining_meta = meta.iloc[remaining_idx].reset_index(drop=True)
-        remaining_labels = remaining_meta["_label"].values
-        pos_idx = [i for i, l in enumerate(remaining_labels) if l == 1]
-        neg_idx = [i for i, l in enumerate(remaining_labels) if l == 0]
-        rng.shuffle(pos_idx)
-        rng.shuffle(neg_idx)
-        n_pte = int(len(pos_idx) * cfg.training.test_split)
-        n_nte = int(len(neg_idx) * cfg.training.test_split)
-        n_pv = int(len(pos_idx) * cfg.training.val_split)
-        n_nv = int(len(neg_idx) * cfg.training.val_split)
-        test_local = pos_idx[:n_pte] + neg_idx[:n_nte]
-        val_local = pos_idx[n_pte:n_pte + n_pv] + neg_idx[n_nte:n_nte + n_nv]
-        train_local = pos_idx[n_pte + n_pv:] + neg_idx[n_nte + n_nv:]
-        rng.shuffle(test_local)
-        rng.shuffle(val_local)
-        rng.shuffle(train_local)
-        # Map back to original meta indices
-        train_idx = [remaining_idx[i] for i in train_local]
-        val_idx = [remaining_idx[i] for i in val_local]
-        test_idx = [remaining_idx[i] for i in test_local]
+        # Split remaining into train/val/test
+        balanced = getattr(cfg.training, "balanced_country_splits", False)
+        if balanced:
+            # Build a temporary meta with remaining indices for country-balanced splitting
+            remaining_meta = meta.iloc[remaining_idx].copy()
+            remaining_meta.index = range(len(remaining_meta))
+            tr_local, va_local, te_local = _country_balanced_split_indices(
+                remaining_meta, candidates, cfg, rng,
+            )
+            train_idx = [remaining_idx[i] for i in tr_local]
+            val_idx = [remaining_idx[i] for i in va_local]
+            test_idx = [remaining_idx[i] for i in te_local]
+        else:
+            remaining_meta = meta.iloc[remaining_idx].reset_index(drop=True)
+            remaining_labels = remaining_meta["_label"].values
+            pos_idx = [i for i, l in enumerate(remaining_labels) if l == 1]
+            neg_idx = [i for i, l in enumerate(remaining_labels) if l == 0]
+            rng.shuffle(pos_idx)
+            rng.shuffle(neg_idx)
+            n_pte = int(len(pos_idx) * cfg.training.test_split)
+            n_nte = int(len(neg_idx) * cfg.training.test_split)
+            n_pv = int(len(pos_idx) * cfg.training.val_split)
+            n_nv = int(len(neg_idx) * cfg.training.val_split)
+            test_local = pos_idx[:n_pte] + neg_idx[:n_nte]
+            val_local = pos_idx[n_pte:n_pte + n_pv] + neg_idx[n_nte:n_nte + n_nv]
+            train_local = pos_idx[n_pte + n_pv:] + neg_idx[n_nte + n_nv:]
+            rng.shuffle(test_local)
+            rng.shuffle(val_local)
+            rng.shuffle(train_local)
+            train_idx = [remaining_idx[i] for i in train_local]
+            val_idx = [remaining_idx[i] for i in val_local]
+            test_idx = [remaining_idx[i] for i in test_local]
         meta.drop(columns=["_viz_status"], inplace=True)
     elif bool(cfg.data.train_regions):
         train_idx, val_idx, test_idx = _region_split_indices(
+            meta, candidates, cfg, rng,
+        )
+    elif getattr(cfg.training, "balanced_country_splits", False):
+        train_idx, val_idx, test_idx = _country_balanced_split_indices(
             meta, candidates, cfg, rng,
         )
     else:

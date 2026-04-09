@@ -45,6 +45,7 @@ training:
   test_split: 0.15
   seed: 42
   mixed_precision: true
+  balanced_country_splits: true
   class_weight: [1.0, 1.5]
   augmentation:
     enabled: true

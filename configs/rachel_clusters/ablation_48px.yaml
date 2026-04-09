@@ -41,6 +41,7 @@ training:
   seed: 42
   mixed_precision: true
   upsample_minority_regions: true
+  balanced_country_splits: true
   crop_center_px: 48
   augmentation:
     enabled: true

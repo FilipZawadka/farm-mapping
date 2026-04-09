@@ -45,6 +45,7 @@ training:
   test_split: 0.15
   seed: 42
   mixed_precision: true
+  balanced_country_splits: true
   augmentation:
     enabled: true
     horizontal_flip: { enabled: true, probability: 0.5 }

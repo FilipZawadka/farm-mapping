@@ -55,6 +55,7 @@ training:
   mixed_precision: true
   class_weight: [1.0, 1.0]
   upsample_minority_regions: true
+  balanced_country_splits: true
   augmentation:
     enabled: true
     horizontal_flip: { enabled: true, probability: 0.5 }

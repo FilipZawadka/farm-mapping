@@ -371,6 +371,7 @@ class TrainingConfig(BaseModel):
     class_weight: Optional[list[float]] = None
     # Upsample minority regions so each country contributes equally per epoch
     upsample_minority_regions: bool = False
+    balanced_country_splits: bool = False
     augmentation: AugmentationConfig = Field(default_factory=AugmentationConfig)
     # Ablation: use only a subset of channels at training time (by band name).
     # None = use all channels from patches. E.g. ["B2","B3","B4","NDWI"] for RGB+NDWI.

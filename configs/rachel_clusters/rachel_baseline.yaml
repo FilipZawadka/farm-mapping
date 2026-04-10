@@ -11,7 +11,7 @@ data:
   inspected_as_test: true
 
 patches:
-  patch_size_px: 64
+  patch_size_px: 128
   resolution_m: 10
   bands: [B2, B3, B4, B8, B11, B12]
   indices: [NDVI, NDBI, NDWI]
@@ -26,7 +26,7 @@ model:
   hub_name: microsoft/resnet-50
   pretrained: true
   num_classes: 2
-  input_channels: 9
+  input_channels: 4
   freeze_backbone_epochs: 5
 
 training:
@@ -42,6 +42,8 @@ training:
   mixed_precision: true
   upsample_minority_regions: true
   balanced_country_splits: true
+  channel_subset: [B2, B3, B4, NDWI]
+  crop_center_px: 64
   augmentation:
     enabled: true
     horizontal_flip: { enabled: true, probability: 0.5 }

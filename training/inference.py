@@ -145,8 +145,25 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     valid_ids = set(meta["candidate_id"].astype(str))
     cands_filtered = candidates[candidates["id"].astype(str).isin(valid_ids)].copy()
 
-    ds = PatchDataset(meta, cands_filtered, patches_root, augment=False)
+    # Apply same channel_subset and crop as training
+    channel_indices = None
+    n_spectral = len(cfg.patches.bands)
+    channel_subset = getattr(cfg.training, "channel_subset", None)
+    if channel_subset:
+        from .config import resolve_channel_indices
+        channel_indices, n_spectral = resolve_channel_indices(
+            channel_subset, cfg.patches.bands, cfg.patches.indices,
+        )
+    crop_size = getattr(cfg.training, "crop_center_px", None)
+
+    ds = PatchDataset(meta, cands_filtered, patches_root, augment=False,
+                      n_spectral_bands=n_spectral, channel_indices=channel_indices,
+                      crop_size=crop_size)
     loader = DataLoader(ds, batch_size=cfg.training.batch_size, shuffle=False, num_workers=0)
+
+    # Compute effective input_channels
+    if channel_subset:
+        cfg.model.input_channels = len(channel_subset)
 
     model = _load_model(cfg, device)
     scores_arr, preds_arr = _run_inference(model, loader, device, cfg.inference.threshold)

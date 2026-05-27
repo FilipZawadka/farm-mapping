@@ -68,6 +68,7 @@ def convert(
     label_mode: str = "binary",
     exclude_labels: list[str] | None = None,
     exclude_osm_farms: bool = False,
+    inspected_only: bool = False,
 ) -> pd.DataFrame:
     """Convert parquet to candidate CSVs.
 
@@ -76,9 +77,10 @@ def convert(
         candidates_dir: Output directory for per-country CSVs.
         include_unlabeled: If True, keep unlabeled clusters (label=-1).
         label_mode: "binary" (farm=1, not-farm=0) or "poultry" (poultry=1, else=0).
-        exclude_labels: List of modified_label values to drop entirely.
+        exclude_labels: List of label values to drop entirely.
         exclude_osm_farms: If True, drop rows where original_label contains "OSM"
             and the row is tagged as a farm (via standardized_label or OSM farm tags).
+        inspected_only: If True, keep only rows with viz_status == "inspected".
 
     Returns the full DataFrame for inspection.
     """
@@ -90,13 +92,24 @@ def convert(
     df = pd.read_parquet(parquet_path)
     log.info("Total clusters: %d", len(df))
 
+    # Pick label column: new files use "final_label", old files use "modified_label"
+    label_col = "final_label" if "final_label" in df.columns else "modified_label"
+    log.info("Using label column: %s", label_col)
+
+    if inspected_only:
+        if "viz_status" not in df.columns:
+            raise ValueError("inspected_only=True but viz_status column missing")
+        before = len(df)
+        df = df[df["viz_status"] == "inspected"].copy()
+        log.info("Inspected only: %d -> %d", before, len(df))
+
     # Exclude ambiguous
-    df = df[df["modified_label"] != "Ambiguous"].copy() if "modified_label" in df.columns else df.copy()
+    df = df[df[label_col] != "Ambiguous"].copy() if label_col in df.columns else df.copy()
 
     # Exclude specific labels
     if exclude_labels:
         before = len(df)
-        df = df[~df["modified_label"].isin(exclude_labels)]
+        df = df[~df[label_col].isin(exclude_labels)]
         log.info("Excluded labels %s: %d -> %d", exclude_labels, before, len(df))
 
     # Exclude OSM-tagged farm rows (inaccurate labels)
@@ -115,7 +128,7 @@ def convert(
         log.info("Excluded OSM-tagged farms: %d -> %d (%d removed)", before, len(df), before - len(df))
 
     if not include_unlabeled:
-        df = df[df["modified_label"].notna()].copy()
+        df = df[df[label_col].notna()].copy()
         log.info("Labelled only: %d", len(df))
     else:
         log.info("All clusters (incl. unlabeled): %d", len(df))
@@ -133,22 +146,44 @@ def convert(
             if "Poultry" in x:
                 return 1
             return 0  # Pigs, Cattle, NotFarm, PigsOrPoultry → 0
-        df["label"] = df["modified_label"].apply(_to_label)
+        df["label"] = df[label_col].apply(_to_label)
         log.info("Poultry mode: %d poultry, %d other, %d unlabeled",
                  (df["label"] == 1).sum(), (df["label"] == 0).sum(), (df["label"] == -1).sum())
+    elif label_mode == "multiclass":
+        # 7-class farm-type taxonomy
+        _MULTICLASS_MAP = {
+            "NotFarm": 0,
+            "Farm: Poultry: Meat Chickens": 1,
+            "Farm: Poultry: Eggs": 2,
+            "Farm: Poultry: Unspecified/Other": 3,
+            "Farm: Pigs": 4,
+            "Farm: Cattle": 5,
+            "Farm: Mixed": 6,
+            "Farm: Other": 6,
+            "Farm: Unknown": 6,
+            "Farm: PigsOrPoultry": 6,  # ambiguous → bucket with Other
+        }
+        def _to_label(x):
+            if pd.isna(x):
+                return -1
+            return _MULTICLASS_MAP.get(x, -1)
+        df["label"] = df[label_col].apply(_to_label)
+        counts = df["label"].value_counts().sort_index()
+        log.info("Multiclass labels: %s",
+                 {int(k): int(v) for k, v in counts.items()})
     else:
         def _to_label(x):
             if pd.isna(x):
                 return -1
             return 0 if x == "NotFarm" else 1
-        df["label"] = df["modified_label"].apply(_to_label)
+        df["label"] = df[label_col].apply(_to_label)
 
-    # Map to our schema
+    # Map to our schema. Unknown ADM0 codes → lowercase code (e.g. "AFG" → "afg").
     df["id"] = df["cluster_id"]
-    df["country_key"] = df["ADM0"].map(_ADM0_TO_KEY)
-    df["country"] = df["country_key"].map(_KEY_TO_NAME)
+    df["country_key"] = df["ADM0"].map(_ADM0_TO_KEY).fillna(df["ADM0"].str.lower())
+    df["country"] = df["country_key"].map(_KEY_TO_NAME).fillna(df["ADM0"])
     df["source"] = "rachel_clusters"
-    df["category"] = df["modified_label"]
+    df["category"] = df[label_col]
     df["species"] = ""
     df["name"] = ""
 
@@ -212,6 +247,7 @@ def main() -> None:
         label_mode=getattr(cfg.data, "label_mode", "binary"),
         exclude_labels=getattr(cfg.data, "exclude_labels", None),
         exclude_osm_farms=getattr(cfg.data, "exclude_osm_farms", False),
+        inspected_only=getattr(cfg.data, "inspected_only", False),
     )
 
 

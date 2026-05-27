@@ -126,6 +126,8 @@ class DataConfig(BaseModel):
     include_unlabeled: bool = False
     # Force candidates with viz_status=inspected into test set (excluded from train/val).
     inspected_as_test: bool = False
+    # Filter parquet_source to viz_status=inspected only (for inference-only runs).
+    inspected_only: bool = False
     # Label mode: "binary" (farm=1, not-farm=0) or "poultry" (poultry=1, else=0)
     label_mode: str = "binary"
     # Drop rows with these modified_label values entirely
@@ -372,6 +374,10 @@ class TrainingConfig(BaseModel):
     # Upsample minority regions so each country contributes equally per epoch
     upsample_minority_regions: bool = False
     balanced_country_splits: bool = False
+    # Upsample minority CLASSES so each class contributes equally per epoch.
+    # When combined with upsample_minority_regions, sampler weights multiply
+    # so train batches are balanced across both axes.
+    balanced_class_sampling: bool = False
     augmentation: AugmentationConfig = Field(default_factory=AugmentationConfig)
     # Ablation: use only a subset of channels at training time (by band name).
     # None = use all channels from patches. E.g. ["B2","B3","B4","NDWI"] for RGB+NDWI.

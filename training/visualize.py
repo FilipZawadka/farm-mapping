@@ -28,12 +28,25 @@ PRED_COLORS = {
     "FP": "#e74c3c",
     "FN": "#f39c12",
     "TN": "#95a5a6",
+    # Unlabeled (no ground truth): UP = predicted farm, UN = predicted not-farm
+    "UP": "#3498db",
+    "UN": "#d0d3d4",
 }
 
 SPLIT_COLORS = {
     "train": "#3498db",
     "val": "#9b59b6",
     "test": "#e67e22",
+}
+
+# Human-readable legend labels for prediction classes.
+CLASS_LABELS = {
+    "TP": "True positive",
+    "FP": "False positive",
+    "FN": "False negative",
+    "TN": "True negative",
+    "UP": "Predicted farm (no label)",
+    "UN": "Predicted not-farm (no label)",
 }
 
 
@@ -44,6 +57,9 @@ def _classify_predictions(scored: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     def _row_class(row):
         pred = int(row.get("predicted_label", 0))
         true = int(row.get("true_label", 0))
+        if true not in (0, 1):
+            # No ground truth (unlabeled) — not part of any confusion cell.
+            return "UP" if pred == 1 else "UN"
         if pred == 1 and true == 1:
             return "TP"
         if pred == 1 and true == 0:
@@ -155,10 +171,12 @@ def _build_pred_layers(scored: gpd.GeoDataFrame, viz_cfg: VizConfig):
     show_map = {
         "TP": viz_cfg.show_true_positives, "FP": viz_cfg.show_false_positives,
         "FN": viz_cfg.show_false_negatives, "TN": viz_cfg.show_true_negatives,
+        # Unlabeled classes have no viz flags — always show when present.
+        "UP": True, "UN": True,
     }
     layers_js = ""
     legend_html = ""
-    for pred_class in ("TP", "FP", "FN", "TN"):
+    for pred_class in ("TP", "FP", "FN", "TN", "UP", "UN"):
         if not show_map.get(pred_class, False):
             continue
         subset = scored[scored["pred_class"] == pred_class]
@@ -167,7 +185,7 @@ def _build_pred_layers(scored: gpd.GeoDataFrame, viz_cfg: VizConfig):
         color = PRED_COLORS[pred_class]
         features = _gdf_to_features(subset)
         layers_js += _build_layer_js(pred_class, features, color)
-        legend_html += _legend_item(pred_class, color, len(features))
+        legend_html += _legend_item(CLASS_LABELS.get(pred_class, pred_class), color, len(features))
     return layers_js, legend_html
 
 
@@ -229,15 +247,26 @@ def _build_split_layer_js(split_name: str, subset: gpd.GeoDataFrame, n: int) -> 
 
 
 def _build_split_layers(scored: gpd.GeoDataFrame):
-    """Build toggleable layers for train/val/test/inspected, points colored by pred_class."""
+    """Build toggleable layers for each split present, points colored by pred_class."""
     if "split" not in scored.columns:
         return ""
     layers_js = ""
-    for split in ("train", "val", "test", "inspected"):
+    known = ("train", "val", "test", "inspected")
+    seen: set[str] = set()
+    for split in known:
         subset = scored[scored["split"] == split]
         if len(subset) == 0:
             continue
         layers_js += _build_split_layer_js(split, subset, len(subset))
+        seen.add(split)
+    # Also surface any other split values present (e.g. "unknown" for inference-only runs).
+    for split in scored["split"].dropna().unique():
+        if split in seen:
+            continue
+        subset = scored[scored["split"] == split]
+        if len(subset) == 0:
+            continue
+        layers_js += _build_split_layer_js(str(split), subset, len(subset))
     return layers_js
 
 
@@ -254,10 +283,12 @@ def generate_prediction_map(
 
     # Legend shows prediction class colors (not split colors)
     legend_html = ""
-    for pred_class in ("TP", "FP", "FN", "TN"):
+    for pred_class in ("TP", "FP", "FN", "TN", "UP", "UN"):
         n = int((scored["pred_class"] == pred_class).sum())
         if n > 0:
-            legend_html += _legend_item(pred_class, PRED_COLORS[pred_class], n)
+            legend_html += _legend_item(
+                CLASS_LABELS.get(pred_class, pred_class), PRED_COLORS[pred_class], n
+            )
 
     layers_js += _metrics_panel_js(scored)
 

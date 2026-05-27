@@ -184,6 +184,9 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
         split_map = dict(zip(splits["candidate_id"].astype(str), splits["split"]))
         result["split"] = result["candidate_id"].astype(str).map(split_map).fillna("unknown")
         log.info("Attached split assignments (train/val/test) from %s", splits_path)
+    elif getattr(cfg.data, "inspected_only", False):
+        # Inference-only on inspected clusters — no splits file expected.
+        result["split"] = "inspected"
     else:
         result["split"] = "unknown"
 

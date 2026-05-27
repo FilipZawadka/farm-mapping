@@ -699,13 +699,56 @@ def build_splits(
     if inspected_idx:
         inspected_ds = PatchDataset(meta_clean.iloc[inspected_idx], candidates, patches_root, augment=False, **ds_kwargs)
 
-    # Compute per-sample weights for region upsampling
+    # Compute per-sample weights for region and/or class upsampling.
+    # When both are enabled, weights multiply: each sample's draw probability
+    # is proportional to (1/n_country) * (1/n_class), giving roughly equal
+    # representation across both axes per epoch.
+    region_w = None
+    class_w = None
     if cfg.training.upsample_minority_regions:
-        train_ds.sample_weights = _compute_region_weights(
+        region_w = _compute_region_weights(
             meta_clean.iloc[train_idx], candidates,
         )
+    if getattr(cfg.training, "balanced_class_sampling", False):
+        class_w = _compute_class_weights(
+            meta_clean.iloc[train_idx], candidates,
+        )
+    if region_w is not None and class_w is not None:
+        train_ds.sample_weights = region_w * class_w
+    elif region_w is not None:
+        train_ds.sample_weights = region_w
+    elif class_w is not None:
+        train_ds.sample_weights = class_w
 
     return train_ds, val_ds, test_ds, inspected_ds
+
+
+def _compute_class_weights(
+    meta: pd.DataFrame, candidates: pd.DataFrame,
+) -> np.ndarray:
+    """Compute per-sample weights so each class contributes equally per epoch.
+
+    Inversely proportional to class frequency in the training subset.
+    """
+    cid_to_label = dict(zip(
+        candidates["id"].astype(str), candidates["label"].astype(int),
+    ))
+    labels = meta["candidate_id"].astype(str).map(cid_to_label).fillna(-1).astype(int)
+
+    counts = labels.value_counts()
+    # Exclude unlabeled (-1) from the balanced sampler reckoning, but keep
+    # such rows with weight 0 so they never get sampled (defensive).
+    counts = counts[counts.index >= 0]
+    n_classes = len(counts)
+    total = int(counts.sum())
+    weight_map = {c: total / (n_classes * n) for c, n in counts.items()}
+    weights = labels.map(weight_map).fillna(0.0).values.astype(np.float64)
+
+    log.info(
+        "Class upsampling weights: %s",
+        ", ".join(f"class{c}={weight_map[c]:.2f} (n={counts[c]})" for c in sorted(weight_map)),
+    )
+    return weights
 
 
 def _compute_region_weights(

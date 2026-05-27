@@ -28,24 +28,46 @@ log = logging.getLogger(__name__)
 def _compute_metrics(
     preds: np.ndarray, labels: np.ndarray
 ) -> dict[str, float]:
-    """Accuracy, precision, recall, F1 for the positive class."""
-    tp = int(((preds == 1) & (labels == 1)).sum())
-    fp = int(((preds == 1) & (labels == 0)).sum())
-    fn = int(((preds == 0) & (labels == 1)).sum())
-    tn = int(((preds == 0) & (labels == 0)).sum())
+    """Accuracy, precision, recall, F1.
 
-    accuracy = (tp + tn) / max(tp + fp + fn + tn, 1)
-    precision = tp / max(tp + fp, 1)
-    recall = tp / max(tp + fn, 1)
-    f1 = 2 * precision * recall / max(precision + recall, 1e-8)
-
-    return {
-        "accuracy": round(accuracy, 4),
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1": round(f1, 4),
-        "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+    Binary (labels ∈ {0,1}): positive-class metrics + confusion cells.
+    Multi-class (any label > 1): macro-averaged metrics + per-class F1.
+    """
+    is_multiclass = bool(np.any(labels > 1) or np.any(preds > 1))
+    if not is_multiclass:
+        tp = int(((preds == 1) & (labels == 1)).sum())
+        fp = int(((preds == 1) & (labels == 0)).sum())
+        fn = int(((preds == 0) & (labels == 1)).sum())
+        tn = int(((preds == 0) & (labels == 0)).sum())
+        accuracy = (tp + tn) / max(tp + fp + fn + tn, 1)
+        precision = tp / max(tp + fp, 1)
+        recall = tp / max(tp + fn, 1)
+        f1 = 2 * precision * recall / max(precision + recall, 1e-8)
+        return {
+            "accuracy": round(accuracy, 4),
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+            "f1": round(f1, 4),
+            "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+        }
+    from sklearn.metrics import (
+        accuracy_score, precision_recall_fscore_support, f1_score,
+    )
+    acc = accuracy_score(labels, preds)
+    p_macro, r_macro, f1_macro, _ = precision_recall_fscore_support(
+        labels, preds, average="macro", zero_division=0,
+    )
+    per_class_f1 = f1_score(labels, preds, average=None, zero_division=0,
+                            labels=sorted(set(int(x) for x in np.unique(np.concatenate([labels, preds])))))
+    out = {
+        "accuracy": round(float(acc), 4),
+        "precision": round(float(p_macro), 4),
+        "recall": round(float(r_macro), 4),
+        "f1": round(float(f1_macro), 4),
     }
+    for i, v in enumerate(per_class_f1):
+        out[f"f1_class{i}"] = round(float(v), 4)
+    return out
 
 
 @torch.no_grad()
@@ -234,14 +256,22 @@ def train(cfg: PipelineConfig) -> Path:
     # Use weighted sampler when upsampling minority regions
     train_sampler = None
     train_shuffle = True
-    if cfg.training.upsample_minority_regions and hasattr(train_ds, "sample_weights"):
+    use_weighted = (
+        cfg.training.upsample_minority_regions
+        or getattr(cfg.training, "balanced_class_sampling", False)
+    )
+    if use_weighted and hasattr(train_ds, "sample_weights"):
         train_sampler = WeightedRandomSampler(
             weights=train_ds.sample_weights,
             num_samples=len(train_ds),
             replacement=True,
         )
         train_shuffle = False  # sampler and shuffle are mutually exclusive
-        log.info("Using WeightedRandomSampler for region upsampling")
+        log.info(
+            "Using WeightedRandomSampler (region=%s, class=%s)",
+            cfg.training.upsample_minority_regions,
+            getattr(cfg.training, "balanced_class_sampling", False),
+        )
 
     train_loader = DataLoader(train_ds, batch_size=bs, shuffle=train_shuffle, sampler=train_sampler, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=0)

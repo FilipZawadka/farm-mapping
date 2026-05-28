@@ -61,14 +61,31 @@ def _load_model(cfg: PipelineConfig, device: torch.device):
 
 
 @torch.no_grad()
-def _run_inference(model, loader, device, threshold):
-    all_scores, all_preds = [], []
+def _run_inference(model, loader, device, threshold, num_classes: int = 2):
+    """Run inference. Returns (scores, preds, probs_matrix_or_None).
+
+    Binary (num_classes=2):
+        scores = P(class=1), preds = (scores >= threshold).
+    Multi-class (num_classes>=3):
+        scores = top-1 probability, preds = argmax over classes.
+        Per-class probabilities are also returned for downstream coloring.
+    """
+    is_multi = num_classes >= 3
+    all_scores, all_preds, all_probs = [], [], []
     for batch_x, _ in loader:
-        probs = torch.softmax(model(batch_x.to(device)), dim=1)
-        pos = probs[:, 1].cpu().numpy()
-        all_scores.append(pos)
-        all_preds.append((pos >= threshold).astype(int))
-    return np.concatenate(all_scores), np.concatenate(all_preds)
+        probs = torch.softmax(model(batch_x.to(device)), dim=1).cpu().numpy()
+        if is_multi:
+            preds = probs.argmax(axis=1)
+            top1 = probs.max(axis=1)
+            all_preds.append(preds)
+            all_scores.append(top1)
+            all_probs.append(probs)
+        else:
+            pos = probs[:, 1]
+            all_scores.append(pos)
+            all_preds.append((pos >= threshold).astype(int))
+    probs_matrix = np.vstack(all_probs) if is_multi else None
+    return np.concatenate(all_scores), np.concatenate(all_preds), probs_matrix
 
 
 def _attach_labels(result, candidates):
@@ -166,12 +183,19 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
         cfg.model.input_channels = len(channel_subset)
 
     model = _load_model(cfg, device)
-    scores_arr, preds_arr = _run_inference(model, loader, device, cfg.inference.threshold)
+    num_classes = getattr(cfg.model, "num_classes", 2)
+    scores_arr, preds_arr, probs_matrix = _run_inference(
+        model, loader, device, cfg.inference.threshold, num_classes=num_classes,
+    )
 
     result = meta[["candidate_id", "lat", "lng"]].copy()
     result["predicted_score"] = scores_arr
     result["predicted_label"] = preds_arr
     result["confidence_tier"] = _assign_confidence(scores_arr, cfg)
+    if probs_matrix is not None:
+        # Multi-class: store per-class probabilities for downstream coloring/sorting.
+        for i in range(probs_matrix.shape[1]):
+            result[f"prob_class{i}"] = probs_matrix[:, i]
     _attach_labels(result, candidates)
 
     # Attach split assignments if available (config-specific)

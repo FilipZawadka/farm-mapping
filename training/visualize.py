@@ -49,6 +49,27 @@ CLASS_LABELS = {
     "UN": "Predicted not-farm (no label)",
 }
 
+# Multi-class palette + names. Indices match training/rachel_to_candidates.py
+# multiclass mode (0..6). Add classes here if the taxonomy grows.
+MULTICLASS_COLORS = {
+    0: "#95a5a6",   # NotFarm — gray
+    1: "#e67e22",   # Poultry: Meat — orange
+    2: "#f1c40f",   # Poultry: Eggs — yellow
+    3: "#e74c3c",   # Poultry: Unspecified — red
+    4: "#3498db",   # Pigs — blue
+    5: "#27ae60",   # Cattle — green
+    6: "#8e44ad",   # Other — purple
+}
+MULTICLASS_NAMES = {
+    0: "NotFarm",
+    1: "Poultry: Meat",
+    2: "Poultry: Eggs",
+    3: "Poultry: Unspecified",
+    4: "Pigs",
+    5: "Cattle",
+    6: "Other",
+}
+
 
 def _classify_predictions(scored: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Add a ``pred_class`` column: TP, FP, FN, TN."""
@@ -270,27 +291,113 @@ def _build_split_layers(scored: gpd.GeoDataFrame):
     return layers_js
 
 
+def _is_multiclass(scored: gpd.GeoDataFrame) -> bool:
+    """Detect multi-class run: predicted_label has values outside {0, 1}."""
+    if "predicted_label" not in scored.columns:
+        return False
+    uniq = set(int(x) for x in scored["predicted_label"].dropna().unique())
+    return any(v > 1 for v in uniq)
+
+
+def _build_multiclass_layers(scored: gpd.GeoDataFrame):
+    """One layer per predicted class; each toggleable in the layer control."""
+    layers_js = ""
+    for cls in sorted(set(int(x) for x in scored["predicted_label"].dropna().unique())):
+        subset = scored[scored["predicted_label"] == cls]
+        if len(subset) == 0:
+            continue
+        name = MULTICLASS_NAMES.get(cls, f"class {cls}")
+        color = MULTICLASS_COLORS.get(cls, "#999")
+        layers_js += _build_layer_js(name, _gdf_to_features(subset), color)
+    return layers_js
+
+
+def _multiclass_legend(scored: gpd.GeoDataFrame) -> str:
+    html = ""
+    for cls in sorted(set(int(x) for x in scored["predicted_label"].dropna().unique())):
+        n = int((scored["predicted_label"] == cls).sum())
+        if n == 0:
+            continue
+        name = MULTICLASS_NAMES.get(cls, f"class {cls}")
+        color = MULTICLASS_COLORS.get(cls, "#999")
+        html += _legend_item(name, color, n)
+    return html
+
+
+def _multiclass_metrics_panel_js(scored: gpd.GeoDataFrame) -> str:
+    """Per-class precision/recall/F1 + macro avg, computed on rows with ground truth."""
+    labeled = scored[scored["true_label"].isin(range(0, 100))]  # any non-(-1) label
+    labeled = labeled[~labeled["true_label"].isna()]
+    if len(labeled) == 0:
+        return ""
+    import numpy as np
+    y_true = labeled["true_label"].astype(int).values
+    y_pred = labeled["predicted_label"].astype(int).values
+    classes = sorted(set(np.concatenate([y_true, y_pred]).tolist()))
+    rows = []
+    macro_p = macro_r = macro_f = 0.0
+    for c in classes:
+        tp = int(((y_pred == c) & (y_true == c)).sum())
+        fp = int(((y_pred == c) & (y_true != c)).sum())
+        fn = int(((y_pred != c) & (y_true == c)).sum())
+        p = tp / max(tp + fp, 1)
+        r = tp / max(tp + fn, 1)
+        f = 2 * p * r / max(p + r, 1e-8)
+        macro_p += p; macro_r += r; macro_f += f
+        name = MULTICLASS_NAMES.get(c, f"class {c}")
+        color = MULTICLASS_COLORS.get(c, "#999")
+        rows.append(
+            f"<tr><td style='color:{color};font-weight:bold'>{name}</td>"
+            f"<td>{p:.3f}</td><td>{r:.3f}</td><td>{f:.3f}</td>"
+            f"<td>{tp}</td><td>{fp}</td><td>{fn}</td></tr>"
+        )
+    k = len(classes)
+    table = (
+        f"<div style='font:12px sans-serif;background:white;padding:8px;border:1px solid #ccc;"
+        f"max-height:50vh;overflow:auto'>"
+        f"<b>Per-class metrics (n={len(labeled):,} labeled)</b>"
+        f"<table style='border-collapse:collapse;margin-top:4px'>"
+        f"<tr><th>Class</th><th>Prec</th><th>Rec</th><th>F1</th><th>TP</th><th>FP</th><th>FN</th></tr>"
+        + "".join(rows)
+        + f"<tr style='border-top:1px solid #999'><td><b>Macro</b></td>"
+        f"<td>{macro_p/k:.3f}</td><td>{macro_r/k:.3f}</td><td>{macro_f/k:.3f}</td>"
+        f"<td colspan=3></td></tr>"
+        f"</table></div>"
+    )
+    # Inject as a Leaflet info control
+    safe = table.replace("'", "\\'").replace("\n", "")
+    return (
+        f"\n    var metricsCtrl = L.control({{position:'topright'}});\n"
+        f"    metricsCtrl.onAdd = function() {{ var d = L.DomUtil.create('div'); d.innerHTML='{safe}'; return d; }};\n"
+        f"    metricsCtrl.addTo(map);\n"
+    )
+
+
 def generate_prediction_map(
     scored: gpd.GeoDataFrame,
     viz_cfg: VizConfig,
     title: str = "Farm Detection Predictions",
 ) -> str:
     """Generate an interactive Leaflet HTML map coloured by prediction outcome."""
-    scored = _classify_predictions(scored)
-
-    # Split layers: train/val/test toggleable, each point colored by TP/FP/FN/TN
-    layers_js = _build_split_layers(scored)
-
-    # Legend shows prediction class colors (not split colors)
-    legend_html = ""
-    for pred_class in ("TP", "FP", "FN", "TN", "UP", "UN"):
-        n = int((scored["pred_class"] == pred_class).sum())
-        if n > 0:
-            legend_html += _legend_item(
-                CLASS_LABELS.get(pred_class, pred_class), PRED_COLORS[pred_class], n
-            )
-
-    layers_js += _metrics_panel_js(scored)
+    multi = _is_multiclass(scored)
+    if multi:
+        # Multi-class: one layer per predicted class, per-class metrics panel.
+        layers_js = _build_multiclass_layers(scored)
+        legend_html = _multiclass_legend(scored)
+        layers_js += _multiclass_metrics_panel_js(scored)
+    else:
+        scored = _classify_predictions(scored)
+        # Split layers: train/val/test toggleable, each point colored by TP/FP/FN/TN
+        layers_js = _build_split_layers(scored)
+        # Legend shows prediction class colors (not split colors)
+        legend_html = ""
+        for pred_class in ("TP", "FP", "FN", "TN", "UP", "UN"):
+            n = int((scored["pred_class"] == pred_class).sum())
+            if n > 0:
+                legend_html += _legend_item(
+                    CLASS_LABELS.get(pred_class, pred_class), PRED_COLORS[pred_class], n
+                )
+        layers_js += _metrics_panel_js(scored)
 
     center_lat = float(scored["lat"].mean()) if len(scored) > 0 else 15.0
     center_lon = float(scored["lng"].mean()) if len(scored) > 0 else 100.0

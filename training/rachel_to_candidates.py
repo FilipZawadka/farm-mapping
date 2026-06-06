@@ -149,6 +149,35 @@ def convert(
         df["label"] = df[label_col].apply(_to_label)
         log.info("Poultry mode: %d poultry, %d other, %d unlabeled",
                  (df["label"] == 1).sum(), (df["label"] == 0).sum(), (df["label"] == -1).sum())
+    elif label_mode == "three_class":
+        # 3-class: NotFarm / Poultry / OtherFarm.
+        # Ambiguous farm types are dropped entirely (not bucketed into "Other").
+        _DROP_3 = {"Farm: Mixed", "Farm: Other", "Farm: Unknown",
+                   "Farm: PigsOrPoultry"}
+        before = len(df)
+        df = df[~df[label_col].isin(_DROP_3)].copy()
+        log.info(
+            "three_class: dropped %d ambiguous farm samples (%d -> %d)",
+            before - len(df), before, len(df),
+        )
+        _MAP_3 = {
+            "NotFarm": 0,
+            "Farm: Poultry: Meat Chickens": 1,
+            "Farm: Poultry: Eggs": 1,
+            "Farm: Poultry: Unspecified/Other": 1,
+            "Farm: Pigs": 2,
+            "Farm: Cattle": 2,
+        }
+        def _to_label(x):
+            if pd.isna(x):
+                return -1
+            return _MAP_3.get(x, -1)
+        df["label"] = df[label_col].apply(_to_label)
+        counts = df["label"].value_counts().sort_index()
+        log.info(
+            "three_class labels (0=NotFarm 1=Poultry 2=OtherFarm): %s",
+            {int(k): int(v) for k, v in counts.items()},
+        )
     elif label_mode == "multiclass":
         # 7-class farm-type taxonomy
         _MULTICLASS_MAP = {

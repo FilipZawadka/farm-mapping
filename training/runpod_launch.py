@@ -198,7 +198,11 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
         _LOAD_RUNPOD_ENV,
         f"git config --global --add safe.directory {code_dir}",
         f"cd {code_dir}",
-        "git pull --ff-only || true",
+        # Force-sync to origin/main. The previous `git pull --ff-only || true`
+        # silently swallowed failures when a previous pod left stale modifications
+        # on the network volume, causing later pods to run with old code.
+        "git fetch origin",
+        "git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo main)",
         _run_dir_cmd(cfg, config_name, "pipeline"),
         f"[ -d {venv} ]"
         f" && echo 'farm-venv found, skipping install'"

@@ -299,32 +299,50 @@ def _is_multiclass(scored: gpd.GeoDataFrame) -> bool:
     return any(v > 1 for v in uniq)
 
 
-def _build_multiclass_layers(scored: gpd.GeoDataFrame):
+def _name_for_class(cls: int, names_override: list[str] | None = None) -> str:
+    if names_override and 0 <= cls < len(names_override):
+        return names_override[cls]
+    return MULTICLASS_NAMES.get(cls, f"class {cls}")
+
+
+def _color_for_class(cls: int, colors_override: list[str] | None = None) -> str:
+    if colors_override and 0 <= cls < len(colors_override):
+        return colors_override[cls]
+    return MULTICLASS_COLORS.get(cls, "#999")
+
+
+def _build_multiclass_layers(scored: gpd.GeoDataFrame,
+                              names: list[str] | None = None,
+                              colors: list[str] | None = None):
     """One layer per predicted class; each toggleable in the layer control."""
     layers_js = ""
     for cls in sorted(set(int(x) for x in scored["predicted_label"].dropna().unique())):
         subset = scored[scored["predicted_label"] == cls]
         if len(subset) == 0:
             continue
-        name = MULTICLASS_NAMES.get(cls, f"class {cls}")
-        color = MULTICLASS_COLORS.get(cls, "#999")
+        name = _name_for_class(cls, names)
+        color = _color_for_class(cls, colors)
         layers_js += _build_layer_js(name, _gdf_to_features(subset), color)
     return layers_js
 
 
-def _multiclass_legend(scored: gpd.GeoDataFrame) -> str:
+def _multiclass_legend(scored: gpd.GeoDataFrame,
+                        names: list[str] | None = None,
+                        colors: list[str] | None = None) -> str:
     html = ""
     for cls in sorted(set(int(x) for x in scored["predicted_label"].dropna().unique())):
         n = int((scored["predicted_label"] == cls).sum())
         if n == 0:
             continue
-        name = MULTICLASS_NAMES.get(cls, f"class {cls}")
-        color = MULTICLASS_COLORS.get(cls, "#999")
+        name = _name_for_class(cls, names)
+        color = _color_for_class(cls, colors)
         html += _legend_item(name, color, n)
     return html
 
 
-def _multiclass_metrics_panel_js(scored: gpd.GeoDataFrame) -> str:
+def _multiclass_metrics_panel_js(scored: gpd.GeoDataFrame,
+                                   names: list[str] | None = None,
+                                   colors: list[str] | None = None) -> str:
     """Per-class precision/recall/F1 + macro avg, computed on rows with ground truth."""
     labeled = scored[scored["true_label"].isin(range(0, 100))]  # any non-(-1) label
     labeled = labeled[~labeled["true_label"].isna()]
@@ -344,8 +362,8 @@ def _multiclass_metrics_panel_js(scored: gpd.GeoDataFrame) -> str:
         r = tp / max(tp + fn, 1)
         f = 2 * p * r / max(p + r, 1e-8)
         macro_p += p; macro_r += r; macro_f += f
-        name = MULTICLASS_NAMES.get(c, f"class {c}")
-        color = MULTICLASS_COLORS.get(c, "#999")
+        name = _name_for_class(c, names)
+        color = _color_for_class(c, colors)
         rows.append(
             f"<tr><td style='color:{color};font-weight:bold'>{name}</td>"
             f"<td>{p:.3f}</td><td>{r:.3f}</td><td>{f:.3f}</td>"
@@ -377,14 +395,16 @@ def generate_prediction_map(
     scored: gpd.GeoDataFrame,
     viz_cfg: VizConfig,
     title: str = "Farm Detection Predictions",
+    class_names: list[str] | None = None,
+    class_colors: list[str] | None = None,
 ) -> str:
     """Generate an interactive Leaflet HTML map coloured by prediction outcome."""
     multi = _is_multiclass(scored)
     if multi:
         # Multi-class: one layer per predicted class, per-class metrics panel.
-        layers_js = _build_multiclass_layers(scored)
-        legend_html = _multiclass_legend(scored)
-        layers_js += _multiclass_metrics_panel_js(scored)
+        layers_js = _build_multiclass_layers(scored, class_names, class_colors)
+        legend_html = _multiclass_legend(scored, class_names, class_colors)
+        layers_js += _multiclass_metrics_panel_js(scored, class_names, class_colors)
     else:
         scored = _classify_predictions(scored)
         # Split layers: train/val/test toggleable, each point colored by TP/FP/FN/TN
@@ -424,7 +444,11 @@ def visualize(cfg: PipelineConfig) -> Path:
     scored = gpd.read_parquet(scored_path)
     log.info("Loaded %d scored candidates", len(scored))
 
-    html = generate_prediction_map(scored, cfg.visualization)
+    html = generate_prediction_map(
+        scored, cfg.visualization,
+        class_names=getattr(cfg.model, "class_names", None),
+        class_colors=getattr(cfg.model, "class_colors", None),
+    )
 
     output_dir = Path(cfg.visualization.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -274,6 +274,11 @@ class ModelConfig(BaseModel):
     num_classes: int = 2
     input_channels: int = 9
     freeze_backbone_epochs: int = 3
+    # Optional: display names for each class index, used by visualize.py to override
+    # the hardcoded 7-class names. Must have length == num_classes when set.
+    class_names: Optional[list[str]] = None
+    # Optional: hex colors for each class index for the prediction map.
+    class_colors: Optional[list[str]] = None
 
 
 class AugFlipConfig(BaseModel):

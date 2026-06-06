@@ -390,6 +390,14 @@ class TrainingConfig(BaseModel):
     # Ablation: center-crop patches to this size (pixels) at training time.
     # None = use full patch_size_px. E.g. 64 for 640m context instead of 1.28km.
     crop_center_px: Optional[int] = None
+    # Resume training from a checkpoint. Accepts both the new full-state format
+    # (saved by train.py — model + optimizer + scheduler + scaler + epoch) and
+    # legacy weights-only files (warm-start with a fresh optimizer).
+    resume_from: Optional[str] = None
+    # When resuming, controls whether to restore optimizer/scheduler/scaler state.
+    # Set to False to warm-start from weights only — useful for fine-tuning with
+    # different hyperparameters (new LR, new schedule).
+    resume_optimizer_state: bool = True
 
 
 class MLflowConfig(BaseModel):

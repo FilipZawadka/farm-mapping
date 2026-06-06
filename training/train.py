@@ -160,10 +160,55 @@ def _log_mlflow_params(cfg: PipelineConfig, sizes: dict) -> None:
     mlflow.log_params(params)
 
 
+def save_checkpoint(
+    path: Path,
+    model: nn.Module,
+    optimizer,
+    scheduler,
+    scaler,
+    epoch: int,
+    best_val_loss: float,
+) -> None:
+    """Save full training state so the run can resume from this point.
+
+    Format: a dict with ``model_state_dict`` plus optimizer / scheduler / scaler
+    states, current epoch, and best val loss. Old code paths that load with
+    ``weights_only=True`` will fail on these files — use ``load_checkpoint``
+    (defined below) to read them transparently.
+    """
+    payload = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict() if optimizer is not None else None,
+        "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
+        "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+        "epoch": int(epoch),
+        "best_val_loss": float(best_val_loss),
+        "format": "full_state_v1",
+    }
+    torch.save(payload, path)
+
+
+def load_checkpoint(path: str | Path, device: torch.device | None = None) -> dict:
+    """Load a checkpoint, tolerating both new and legacy formats.
+
+    Returns a dict with at least ``model_state_dict``. For the legacy weights-only
+    format (a bare ``state_dict``), other keys are absent — callers should
+    `.get()` optimizer/scheduler/scaler/epoch and handle ``None``.
+    """
+    map_location = device if device is not None else "cpu"
+    # weights_only=False is required to deserialize optimizer/scheduler state,
+    # which contains Python objects beyond raw tensors.
+    obj = torch.load(path, map_location=map_location, weights_only=False)
+    if isinstance(obj, dict) and "model_state_dict" in obj:
+        return obj
+    # Legacy: file IS the model state_dict (bare tensors).
+    return {"model_state_dict": obj}
+
+
 def _save_test_results(
     model, test_loader, criterion, device, output_dir, best_path, cfg,
 ):
-    model.load_state_dict(torch.load(best_path, weights_only=True))
+    model.load_state_dict(load_checkpoint(best_path, device)["model_state_dict"])
     _, test_metrics = _evaluate(model, test_loader, criterion, device)
     mlflow.log_metrics({
         f"test_{k}": v for k, v in test_metrics.items() if isinstance(v, (int, float))
@@ -193,14 +238,64 @@ class _TrainCtx:
         self.best_path = best_path
 
 
-def _run_epoch_loop(ctx: _TrainCtx, train_loader, val_loader):
-    """Inner training loop across all epochs."""
+def _run_epoch_loop(
+    ctx: _TrainCtx,
+    train_loader,
+    val_loader,
+    resumed_state: dict | None = None,
+):
+    """Inner training loop across all epochs.
+
+    ``resumed_state`` (optional) carries ``optimizer_state_dict``,
+    ``scheduler_state_dict``, ``scaler_state_dict``, ``epoch``, and
+    ``best_val_loss`` from a prior run — when present and the config allows it,
+    training continues from ``epoch + 1`` with full optimizer state restored.
+    """
     optimizer = _make_optimizer(ctx.model, ctx.cfg)
     scheduler = _build_scheduler(optimizer, ctx.cfg)
     best_val_loss, patience = float("inf"), 0
+    start_epoch = 1
+    last_ckpt_path = ctx.best_path.with_name("last_ckpt.pt")
 
-    for epoch in range(1, ctx.cfg.training.epochs + 1):
-        if ctx.cfg.model.freeze_backbone_epochs > 0 and epoch == ctx.cfg.model.freeze_backbone_epochs + 1:
+    # Restore from resumed_state if provided.
+    if resumed_state is not None:
+        if ctx.cfg.training.resume_optimizer_state:
+            opt_sd = resumed_state.get("optimizer_state_dict")
+            sch_sd = resumed_state.get("scheduler_state_dict")
+            sca_sd = resumed_state.get("scaler_state_dict")
+            if opt_sd is not None:
+                try:
+                    optimizer.load_state_dict(opt_sd)
+                    log.info("Restored optimizer state")
+                except (ValueError, KeyError) as e:
+                    log.warning("Could not restore optimizer state (%s) — starting fresh", e)
+            if sch_sd is not None and scheduler is not None:
+                try:
+                    scheduler.load_state_dict(sch_sd)
+                    log.info("Restored scheduler state")
+                except (ValueError, KeyError) as e:
+                    log.warning("Could not restore scheduler state (%s)", e)
+            if sca_sd is not None and ctx.scaler is not None:
+                try:
+                    ctx.scaler.load_state_dict(sca_sd)
+                except (ValueError, KeyError) as e:
+                    log.warning("Could not restore scaler state (%s)", e)
+        prior_epoch = int(resumed_state.get("epoch", 0))
+        start_epoch = prior_epoch + 1
+        best_val_loss = float(resumed_state.get("best_val_loss", float("inf")))
+        log.info(
+            "Resuming at epoch %d (prior best_val_loss=%.4f)",
+            start_epoch, best_val_loss,
+        )
+
+    for epoch in range(start_epoch, ctx.cfg.training.epochs + 1):
+        # Unfreeze + LR drop transition (skip when resuming past this point —
+        # both the model state and the optimizer should already reflect it).
+        if (
+            ctx.cfg.model.freeze_backbone_epochs > 0
+            and epoch == ctx.cfg.model.freeze_backbone_epochs + 1
+            and resumed_state is None
+        ):
             ctx.model.unfreeze_backbone()
             optimizer = _make_optimizer(ctx.model, ctx.cfg, lr_scale=0.1)
             scheduler = _build_scheduler(optimizer, ctx.cfg)
@@ -221,11 +316,18 @@ def _run_epoch_loop(ctx: _TrainCtx, train_loader, val_loader):
             vm["f1"], vm["precision"], vm["recall"],
         )
 
+        # Save best as a full-state checkpoint so the run can be resumed.
         if v_loss < best_val_loss:
             best_val_loss, patience = v_loss, 0
-            torch.save(ctx.model.state_dict(), ctx.best_path)
+            save_checkpoint(ctx.best_path, ctx.model, optimizer, scheduler,
+                            ctx.scaler, epoch, best_val_loss)
         else:
             patience += 1
+        # Also write a last-epoch checkpoint every epoch so resume always works
+        # even when the loss is no longer improving (the user's exact case).
+        save_checkpoint(last_ckpt_path, ctx.model, optimizer, scheduler,
+                        ctx.scaler, epoch, best_val_loss)
+
         if patience >= ctx.cfg.training.early_stopping_patience:
             log.info("Early stopping at epoch %d", epoch)
             break
@@ -287,7 +389,33 @@ def train(cfg: PipelineConfig) -> Path:
         log.info("Channel subset: %s -> input_channels=%d", channel_subset, cfg.model.input_channels)
 
     model = build_model(cfg.model).to(device)
-    if cfg.model.freeze_backbone_epochs > 0:
+
+    # Resume-from-checkpoint: load weights here (before freezing decisions) so
+    # we know whether we've already trained past the unfreeze epoch.
+    resumed_state: dict | None = None
+    prior_epoch = 0
+    resume_from = getattr(cfg.training, "resume_from", None)
+    if resume_from:
+        resume_path = Path(resume_from)
+        if not resume_path.exists():
+            raise FileNotFoundError(
+                f"training.resume_from points to a missing file: {resume_path}"
+            )
+        log.info("Resuming from checkpoint: %s", resume_path)
+        resumed_state = load_checkpoint(resume_path, device)
+        model.load_state_dict(resumed_state["model_state_dict"])
+        prior_epoch = int(resumed_state.get("epoch", 0))
+        log.info(
+            "Loaded weights (prior epoch=%d, optimizer state %s)",
+            prior_epoch,
+            "available" if resumed_state.get("optimizer_state_dict") is not None else "absent",
+        )
+
+    # Freeze only when we haven't already trained past the unfreeze point.
+    if (
+        cfg.model.freeze_backbone_epochs > 0
+        and prior_epoch < cfg.model.freeze_backbone_epochs
+    ):
         model.freeze_backbone()
 
     weights = None
@@ -310,13 +438,16 @@ def train(cfg: PipelineConfig) -> Path:
         extra_params = {"train_size": len(train_ds), "val_size": len(val_ds), "test_size": len(test_ds)}
         if inspected_ds:
             extra_params["inspected_size"] = len(inspected_ds)
+        if resume_from:
+            extra_params["resumed_from"] = str(resume_from)
+            extra_params["resume_start_epoch"] = prior_epoch + 1
         _log_mlflow_params(cfg, extra_params)
-        _run_epoch_loop(ctx, train_loader, val_loader)
+        _run_epoch_loop(ctx, train_loader, val_loader, resumed_state=resumed_state)
         _save_test_results(model, test_loader, criterion, device, output_dir, best_path, cfg)
 
         # Evaluate on inspected held-out set separately
         if inspected_loader:
-            model.load_state_dict(torch.load(best_path, weights_only=True))
+            model.load_state_dict(load_checkpoint(best_path, device)["model_state_dict"])
             _, insp_metrics = _evaluate(model, inspected_loader, criterion, device)
             mlflow.log_metrics({
                 f"inspected_{k}": v for k, v in insp_metrics.items() if isinstance(v, (int, float))

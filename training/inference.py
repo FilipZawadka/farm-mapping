@@ -54,7 +54,8 @@ def _load_model(cfg: PipelineConfig, device: torch.device):
     if not ckpt_path.exists():
         # Legacy fallback
         ckpt_path = Path(cfg.patches.output_dir).parent / "output" / "best_model.pt"
-    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
+    from .train import load_checkpoint
+    model.load_state_dict(load_checkpoint(ckpt_path, device)["model_state_dict"])
     model.eval()
     log.info("Loaded checkpoint: %s", ckpt_path)
     return model
@@ -217,12 +218,20 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     geometry = [Point(lng, lat) for lng, lat in zip(result["lng"], result["lat"])]
     scored_gdf = gpd.GeoDataFrame(result, geometry=geometry, crs="EPSG:4326")
 
-    # Save to config-specific output directory
+    # Save to config-specific output directory.
+    # Write a dated copy alongside the canonical name so previous runs are
+    # preserved -- `ls` shows when each "latest" was made.
+    import shutil
+    from datetime import datetime
+
     scored_dir = Path(cfg.patches.output_dir).parent / "output" / cfg._config_stem
     scored_dir.mkdir(parents=True, exist_ok=True)
     output_path = scored_dir / "scored_candidates.parquet"
     scored_gdf.to_parquet(output_path, index=False)
-    log.info("Saved %d scored candidates to %s", len(scored_gdf), output_path)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    dated_path = scored_dir / f"scored_candidates_{stamp}.parquet"
+    shutil.copy2(output_path, dated_path)
+    log.info("Saved %d scored candidates to %s (+ %s)", len(scored_gdf), output_path, dated_path.name)
     return scored_gdf
 
 

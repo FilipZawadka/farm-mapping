@@ -311,18 +311,120 @@ def _color_for_class(cls: int, colors_override: list[str] | None = None) -> str:
     return MULTICLASS_COLORS.get(cls, "#999")
 
 
+def _build_confusion_layer_js(label: str, features: list[dict],
+                                fill_color: str, stroke_color: str,
+                                radius: int = 6, weight: int = 3,
+                                dash: str | None = None) -> str:
+    """Render a layer where fill = predicted-class color and stroke = true-class color.
+
+    For correct predictions (fill == stroke) the marker is uniform; for confusions
+    the contrasting outline makes the true class instantly readable.
+    """
+    import json
+    fc = {"type": "FeatureCollection", "features": features}
+    fc_json = json.dumps(fc)
+    safe = label.replace("'", "\\'")
+    n = len(features)
+    dash_js = f"dashArray: '{dash}'," if dash else ""
+    return f"""
+    (function() {{
+        var layer = L.geoJSON({fc_json}, {{
+            pointToLayer: function(f, ll) {{
+                return L.circleMarker(ll, {{
+                    radius: {radius},
+                    fillColor: '{fill_color}',
+                    color: '{stroke_color}',
+                    weight: {weight},
+                    {dash_js}
+                    fillOpacity: 0.75,
+                    opacity: 1.0
+                }});
+            }},
+            onEachFeature: function(f, layer) {{
+                var p = f.properties;
+                var html = '<b>{safe}</b><br>';
+                if(p.country) html += 'Country: ' + p.country + '<br>';
+                if(p.category) html += 'Label: ' + p.category + '<br>';
+                if(p.confidence !== undefined) html += 'Confidence: ' + Number(p.confidence).toFixed(3) + '<br>';
+                layer.bindPopup(html);
+            }}
+        }}).addTo(map);
+        overlays['{safe} ({n})'] = layer;
+    }})();
+"""
+
+
 def _build_multiclass_layers(scored: gpd.GeoDataFrame,
                               names: list[str] | None = None,
                               colors: list[str] | None = None):
-    """One layer per predicted class; each toggleable in the layer control."""
+    """Confusion-aware layers:
+
+      - One layer per (true_class, predicted_class) cell — fill = pred color,
+        stroke = true color. Correct predictions get a thin border; confusions
+        get a thick contrasting border so they pop on the map.
+      - Unlabeled points get a dashed, lighter layer per predicted class so
+        they're visually separable from ground-truth points.
+    """
+    import numpy as np
     layers_js = ""
-    for cls in sorted(set(int(x) for x in scored["predicted_label"].dropna().unique())):
-        subset = scored[scored["predicted_label"] == cls]
-        if len(subset) == 0:
-            continue
-        name = _name_for_class(cls, names)
-        color = _color_for_class(cls, colors)
-        layers_js += _build_layer_js(name, _gdf_to_features(subset), color)
+
+    has_true = "true_label" in scored.columns
+    if has_true:
+        labeled = scored[scored["true_label"].notna() & (scored["true_label"] != -1)]
+        unlabeled = scored[scored["true_label"].isna() | (scored["true_label"] == -1)]
+    else:
+        labeled = scored.iloc[0:0]
+        unlabeled = scored
+
+    # Build a layer per (true, pred) cell, ordered so correct cells come first
+    # (then confusions, sorted by count descending) — improves layer-control UX.
+    if len(labeled) > 0:
+        y_true = labeled["true_label"].astype(int)
+        y_pred = labeled["predicted_label"].astype(int)
+        classes = sorted(set(np.concatenate([y_true.values, y_pred.values]).tolist()))
+        cells = []
+        for t in classes:
+            for p in classes:
+                subset = labeled[(y_true == t) & (y_pred == p)]
+                if len(subset) == 0:
+                    continue
+                cells.append((t, p, subset))
+        # Correct first (t==p), then confusions by descending size
+        cells.sort(key=lambda x: (x[0] != x[1], -len(x[2])))
+        for t, p, subset in cells:
+            true_name = _name_for_class(t, names)
+            pred_name = _name_for_class(p, names)
+            true_color = _color_for_class(t, colors)
+            pred_color = _color_for_class(p, colors)
+            if t == p:
+                label = f"✓ {true_name} (correct)"
+                layers_js += _build_confusion_layer_js(
+                    label, _gdf_to_features(subset),
+                    fill_color=pred_color, stroke_color=pred_color,
+                    radius=5, weight=1,
+                )
+            else:
+                label = f"✗ true:{true_name} → pred:{pred_name}"
+                layers_js += _build_confusion_layer_js(
+                    label, _gdf_to_features(subset),
+                    fill_color=pred_color, stroke_color=true_color,
+                    radius=7, weight=3,
+                )
+
+    # Unlabeled — show by predicted class, dashed border to mark "no ground truth"
+    if len(unlabeled) > 0:
+        for cls in sorted(set(int(x) for x in unlabeled["predicted_label"].dropna().unique())):
+            subset = unlabeled[unlabeled["predicted_label"].astype(int) == cls]
+            if len(subset) == 0:
+                continue
+            name = _name_for_class(cls, names)
+            color = _color_for_class(cls, colors)
+            layers_js += _build_confusion_layer_js(
+                f"(unlabeled) pred:{name}", _gdf_to_features(subset),
+                fill_color=color, stroke_color="#000",
+                radius=4, weight=1, dash="2,3",
+            )
+
     return layers_js
 
 
@@ -330,6 +432,7 @@ def _multiclass_legend(scored: gpd.GeoDataFrame,
                         names: list[str] | None = None,
                         colors: list[str] | None = None) -> str:
     html = ""
+    # Class color swatches (predicted-class counts)
     for cls in sorted(set(int(x) for x in scored["predicted_label"].dropna().unique())):
         n = int((scored["predicted_label"] == cls).sum())
         if n == 0:
@@ -337,13 +440,115 @@ def _multiclass_legend(scored: gpd.GeoDataFrame,
         name = _name_for_class(cls, names)
         color = _color_for_class(cls, colors)
         html += _legend_item(name, color, n)
+    # Styling key (use double-quoted HTML attrs — the legend is embedded in a
+    # single-quoted JS string by the template, so single quotes would break it).
+    html += (
+        '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #ddd;'
+        'font:11px sans-serif;color:#333">'
+        "<b>Marker style:</b><br>"
+        '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
+        'background:#e74c3c;border:1px solid #e74c3c;margin-right:4px"></span>'
+        "correct (fill = pred class, thin border)<br>"
+        '<span style="display:inline-block;width:12px;height:12px;border-radius:50%;'
+        'background:#e74c3c;border:3px solid #3498db;margin-right:4px"></span>'
+        "<b>confused</b> (fill = pred, thick border = true class)<br>"
+        '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;'
+        'background:#95a5a6;border:1px dashed #000;margin-right:4px"></span>'
+        "unlabeled (dashed border)"
+        "</div>"
+    )
     return html
+
+
+def _confusion_matrix_html(y_true, y_pred, classes: list[int],
+                            names: list[str] | None = None,
+                            colors: list[str] | None = None) -> str:
+    """Build a colored K x K confusion matrix table (rows=true, cols=predicted).
+
+    Cells are shaded by row-normalized share: diagonals green, off-diagonals red.
+    Each cell shows the raw count and the row percentage.
+    """
+    import numpy as np
+    K = len(classes)
+    cm = np.zeros((K, K), dtype=int)
+    idx = {c: i for i, c in enumerate(classes)}
+    for t, p in zip(y_true, y_pred):
+        if t in idx and p in idx:
+            cm[idx[t], idx[p]] += 1
+    row_totals = cm.sum(axis=1)
+    col_totals = cm.sum(axis=0)
+
+    def _cell(i: int, j: int) -> str:
+        n = int(cm[i, j])
+        rt = int(row_totals[i]) or 1
+        share = n / rt
+        if i == j:
+            # green diagonal, opacity scales with row recall
+            bg = f"rgba(46,204,113,{share:.2f})"
+        elif n == 0:
+            bg = "rgba(255,255,255,0)"
+        else:
+            # red off-diagonal, opacity scales with row share of confusion
+            bg = f"rgba(231,76,60,{min(share * 1.2, 1.0):.2f})"
+        pct = (share * 100) if rt else 0.0
+        return (
+            f"<td style='background:{bg};text-align:center;padding:3px 6px;"
+            f"border:1px solid #ddd;min-width:46px'>"
+            f"<div style='font-weight:bold'>{n}</div>"
+            f"<div style='font-size:10px;color:#444'>{pct:.0f}%</div></td>"
+        )
+
+    # Header row: predicted class names
+    header = "<tr><th style='padding:3px 6px;border:1px solid #ddd;background:#f6f6f6'>true \\ pred</th>"
+    for c in classes:
+        name = _name_for_class(c, names)
+        color = _color_for_class(c, colors)
+        header += (
+            f"<th style='padding:3px 6px;border:1px solid #ddd;background:#f6f6f6;"
+            f"color:{color};font-weight:bold'>{name}</th>"
+        )
+    header += "<th style='padding:3px 6px;border:1px solid #ddd;background:#f6f6f6'>total</th></tr>"
+
+    body = ""
+    for i, c in enumerate(classes):
+        name = _name_for_class(c, names)
+        color = _color_for_class(c, colors)
+        body += (
+            f"<tr><th style='padding:3px 6px;border:1px solid #ddd;background:#f6f6f6;"
+            f"color:{color};font-weight:bold;text-align:left'>{name}</th>"
+        )
+        for j in range(K):
+            body += _cell(i, j)
+        body += (
+            f"<td style='text-align:center;padding:3px 6px;border:1px solid #ddd;"
+            f"background:#f6f6f6'>{int(row_totals[i])}</td></tr>"
+        )
+    # Column-total footer
+    footer = "<tr><th style='padding:3px 6px;border:1px solid #ddd;background:#f6f6f6;text-align:left'>pred total</th>"
+    for j in range(K):
+        footer += (
+            f"<td style='text-align:center;padding:3px 6px;border:1px solid #ddd;"
+            f"background:#f6f6f6'>{int(col_totals[j])}</td>"
+        )
+    footer += (
+        f"<td style='text-align:center;padding:3px 6px;border:1px solid #ddd;"
+        f"background:#f6f6f6'><b>{int(cm.sum())}</b></td></tr>"
+    )
+
+    return (
+        f"<div style='margin-top:8px'>"
+        f"<b>Confusion matrix</b> "
+        f"<span style='color:#666'>(rows = true label, cols = predicted; cells colored by row share)</span>"
+        f"<table style='border-collapse:collapse;margin-top:4px;font-size:11px'>"
+        + header + body + footer
+        + f"</table></div>"
+    )
 
 
 def _multiclass_metrics_panel_js(scored: gpd.GeoDataFrame,
                                    names: list[str] | None = None,
                                    colors: list[str] | None = None) -> str:
-    """Per-class precision/recall/F1 + macro avg, computed on rows with ground truth."""
+    """Per-class precision/recall/F1, macro avg, and confusion matrix — on labeled rows."""
     labeled = scored[scored["true_label"].isin(range(0, 100))]  # any non-(-1) label
     labeled = labeled[~labeled["true_label"].isna()]
     if len(labeled) == 0:
@@ -370,9 +575,10 @@ def _multiclass_metrics_panel_js(scored: gpd.GeoDataFrame,
             f"<td>{tp}</td><td>{fp}</td><td>{fn}</td></tr>"
         )
     k = len(classes)
+    cm_html = _confusion_matrix_html(y_true, y_pred, classes, names, colors)
     table = (
         f"<div style='font:12px sans-serif;background:white;padding:8px;border:1px solid #ccc;"
-        f"max-height:50vh;overflow:auto'>"
+        f"max-height:80vh;overflow:auto'>"
         f"<b>Per-class metrics (n={len(labeled):,} labeled)</b>"
         f"<table style='border-collapse:collapse;margin-top:4px'>"
         f"<tr><th>Class</th><th>Prec</th><th>Rec</th><th>F1</th><th>TP</th><th>FP</th><th>FN</th></tr>"
@@ -380,10 +586,12 @@ def _multiclass_metrics_panel_js(scored: gpd.GeoDataFrame,
         + f"<tr style='border-top:1px solid #999'><td><b>Macro</b></td>"
         f"<td>{macro_p/k:.3f}</td><td>{macro_r/k:.3f}</td><td>{macro_f/k:.3f}</td>"
         f"<td colspan=3></td></tr>"
-        f"</table></div>"
+        f"</table>"
+        + cm_html
+        + f"</div>"
     )
     # Inject as a Leaflet info control
-    safe = table.replace("'", "\\'").replace("\n", "")
+    safe = table.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "")
     return (
         f"\n    var metricsCtrl = L.control({{position:'topright'}});\n"
         f"    metricsCtrl.onAdd = function() {{ var d = L.DomUtil.create('div'); d.innerHTML='{safe}'; return d; }};\n"
@@ -454,6 +662,14 @@ def visualize(cfg: PipelineConfig) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     map_path = output_dir / "prediction_map.html"
     save_map(html, map_path)
+
+    # Dated sibling: preserves previous runs and makes the newest one obvious.
+    import shutil
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    dated_path = output_dir / f"prediction_map_{stamp}.html"
+    shutil.copy2(map_path, dated_path)
+    log.info("Wrote dated copy: %s", dated_path.name)
 
     return map_path
 

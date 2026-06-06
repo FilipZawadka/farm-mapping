@@ -1,0 +1,135 @@
+# ============================================================================
+# Long-run continuation of baseline_v2_three_class_continued. Resumes from the
+# epoch-12 last_ckpt (where train loss was lowest) and trains for 100 more
+# epochs at a lower LR, with very loose early stopping.
+#
+# Why "long": the previous continuation early-stopped at epoch 12 because val
+# loss had bottomed out at epoch 4 and the 8-epoch patience tripped. This run:
+#   - Lowers LR (5e-6 vs 1e-5) to slow the overfit and keep val loss responsive
+#   - Bumps patience to 40 so noisy val loss can't terminate early
+#   - Uses 100 epochs of cosine annealing so LR decays smoothly to ~0
+# ============================================================================
+
+run_name: "baseline_v2_three_class_long"
+
+data:
+  candidates_dir: data/rachel_geometry_candidates/candidates_three_class
+  parquet_source: data/rachel_geometry_candidates/all_countries/all_clusters.parquet
+  inspected_as_test: true
+  label_mode: three_class
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches
+  num_workers: 4
+
+model:
+  architecture: resnet50
+  hub_name: microsoft/resnet-50
+  pretrained: true
+  num_classes: 3
+  input_channels: 4
+  freeze_backbone_epochs: 0
+  class_names: [NotFarm, Poultry, OtherFarm]
+  class_colors: ["#95a5a6", "#e74c3c", "#3498db"]
+
+training:
+  # Continue from the last (not best) checkpoint of the previous continuation —
+  # that's where the train loss was lowest. last_ckpt is the new full-state
+  # format with model weights at epoch 12.
+  resume_from: data/output/baseline_v2_three_class_continued/last_ckpt.pt
+  # Fresh optimizer + scheduler so the new T_max=100 takes effect cleanly.
+  # Tradeoff: we lose AdamW momentum but gain a clean cosine cycle. The model
+  # weights and the dataset state are unchanged — what matters most.
+  resume_optimizer_state: false
+
+  epochs: 100
+  batch_size: 32
+  learning_rate: 0.000005      # 5e-6 — half the previous continuation
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 40  # very loose — let it run long even if val is noisy
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+  upsample_minority_regions: true
+  balanced_country_splits: true
+  balanced_class_sampling: true
+  channel_subset: [B2, B3, B4, NDWI]
+  crop_center_px: 64
+  augmentation:
+    enabled: true
+    horizontal_flip: { enabled: true, probability: 0.5 }
+    vertical_flip: { enabled: true, probability: 0.5 }
+    random_rotation_90: { enabled: true, probability: 0.75 }
+    continuous_rotation: { enabled: true, probability: 0.3, max_degrees: 15 }
+    random_resized_crop: { enabled: true, probability: 0.3, scale_min: 0.8, scale_max: 1.0 }
+    brightness_jitter: { enabled: true, probability: 0.5, range_min: 0.85, range_max: 1.15 }
+    per_band_jitter: { enabled: true, probability: 0.3, range_min: 0.95, range_max: 1.05 }
+    gaussian_noise: { enabled: true, probability: 0.3, sigma: 0.02 }
+    channel_dropout: { enabled: true, probability: 0.1, max_channels: 1 }
+    cutout: { enabled: false }
+    recompute_indices: false
+
+mlflow:
+  tracking_uri: ./mlruns
+  experiment_name: rachel_three_class
+  log_model: true
+
+runpod:
+  gpu_type: "NVIDIA RTX PRO 4000 Blackwell"
+  gpu_fallbacks:
+    - "NVIDIA RTX 4000 Ada Generation"
+    - "NVIDIA RTX A4000"
+    - "NVIDIA RTX 4000 SFF Ada Generation"
+    - "NVIDIA GeForce RTX 4080"
+    - "NVIDIA GeForce RTX 4080 SUPER"
+    - "NVIDIA RTX A4500"
+    - "NVIDIA L4"
+    - "NVIDIA RTX A5000"
+    - "NVIDIA GeForce RTX 3090"
+    - "NVIDIA GeForce RTX 3090 Ti"
+    - "NVIDIA GeForce RTX 4090"
+    - "NVIDIA RTX 5000 Ada Generation"
+    - "NVIDIA RTX PRO 4500 Blackwell"
+    - "NVIDIA A40"
+    - "NVIDIA L40"
+    - "NVIDIA L40S"
+    - "NVIDIA RTX A6000"
+    - "NVIDIA RTX 6000 Ada Generation"
+  cloud_type: "ALL"
+  docker_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+  volume_mount: /workspace
+  code_dir: /workspace/farm-mapping
+  github_repo: https://github.com/FilipZawadka/farm-mapping.git
+  github_branch: main
+  api_key_env: RUNPOD_API_KEY
+  network_volume_id: r8nyom4e4e
+  cpu_instance_id: "cpu3g-8-32"
+  cpu_fallbacks:
+    - "cpu3g-4-16"
+    - "cpu3c-8-16"
+    - "cpu3m-4-32"
+  auto_terminate: true
+
+inference:
+  checkpoint: data/output/baseline_v2_three_class_long/best_model.pt
+  threshold: 0.5
+  confidence_tiers:
+    high: 0.9
+    medium: 0.7
+    low: 0.4
+
+visualization:
+  output_dir: output/maps_baseline_v2_three_class_long
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: true

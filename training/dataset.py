@@ -600,15 +600,26 @@ def build_splits(
 
     rng = np.random.default_rng(cfg.training.seed)
 
+    # Pool of rows eligible for train/val/test: labeled (_label != -1) and not
+    # in the eval_set hold-out. Restricting the splitter inputs to this pool
+    # keeps unlabeled rows (carried by include_unlabeled=true) from claiming
+    # val/test slots in country-balanced splits.
+    labeled_pool_mask = (meta["_label"] != -1)
+    if eval_set_filter:
+        labeled_pool_mask = labeled_pool_mask & ~meta.index.isin(eval_set_filter)
+    labeled_meta = meta[labeled_pool_mask]
+
     # If inspected_as_test, hold out inspected candidates as a separate eval set
     inspected_as_test = getattr(cfg.data, "inspected_as_test", False)
     inspected_idx: list[int] = []
     if inspected_as_test and "viz_status" in candidates.columns:
         viz_map = dict(zip(candidates["id"].astype(str), candidates["viz_status"].fillna("")))
         meta["_viz_status"] = meta["candidate_id"].astype(str).map(viz_map).fillna("")
-        inspected_mask = meta["_viz_status"] == "inspected"
+        # Only count LABELED rows as "inspected" so the metric is meaningful;
+        # unlabeled inspected rows fall through to the "unlabeled" split.
+        inspected_mask = (meta["_viz_status"] == "inspected") & labeled_pool_mask
         inspected_idx = list(meta.index[inspected_mask])
-        remaining_idx = list(meta.index[~inspected_mask])
+        remaining_idx = list(meta.index[labeled_pool_mask & ~inspected_mask])
         n_inspected = len(inspected_idx)
         log.info("Inspected hold-out: %d candidates (excluded from train/val/test)", n_inspected)
 
@@ -647,41 +658,39 @@ def build_splits(
         meta.drop(columns=["_viz_status"], inplace=True)
     elif bool(cfg.data.train_regions):
         train_idx, val_idx, test_idx = _region_split_indices(
-            meta, candidates, cfg, rng,
+            labeled_meta, candidates, cfg, rng,
         )
     elif getattr(cfg.training, "balanced_country_splits", False):
-        train_idx, val_idx, test_idx = _country_balanced_split_indices(
-            meta, candidates, cfg, rng,
+        # Re-index to 0..N-1 so the splitter's positional logic is correct;
+        # then map back to original meta indices.
+        lm = labeled_meta.copy(); lm.index = range(len(lm))
+        labeled_orig = labeled_meta.index.tolist()
+        tr_local, va_local, te_local = _country_balanced_split_indices(
+            lm, candidates, cfg, rng,
         )
+        train_idx = [labeled_orig[i] for i in tr_local]
+        val_idx = [labeled_orig[i] for i in va_local]
+        test_idx = [labeled_orig[i] for i in te_local]
     else:
         train_idx, val_idx, test_idx = _random_split_indices(
-            meta, cfg, rng,
+            labeled_meta, cfg, rng,
         )
 
-    # Strip any eval_set rows that leaked into train/val/test/inspected.
-    # The split functions don't know about _eval, so this is the safety net
-    # that guarantees the "MUST never enter train/val/test" contract.
-    if eval_set_filter:
-        train_idx = [i for i in train_idx if i not in eval_set_filter]
-        val_idx = [i for i in val_idx if i not in eval_set_filter]
-        test_idx = [i for i in test_idx if i not in eval_set_filter]
-        inspected_idx = [i for i in inspected_idx if i not in eval_set_filter]
-
-    # Strip unlabeled rows (_label == -1). They're carried into inference
-    # via include_unlabeled but must never enter a labelled split, otherwise
-    # CrossEntropyLoss crashes with `t >= 0 && t < n_classes`.
-    if (meta["_label"] == -1).any():
-        unlabeled_set = set(meta.index[meta["_label"] == -1])
+    # Belt-and-braces: strip any eval_set / unlabeled rows that somehow
+    # survived the input-filter (e.g. region-split path with mixed inputs).
+    strip_set = set(eval_set_filter) | set(meta.index[meta["_label"] == -1])
+    if strip_set:
         before = len(train_idx) + len(val_idx) + len(test_idx) + len(inspected_idx)
-        train_idx = [i for i in train_idx if i not in unlabeled_set]
-        val_idx = [i for i in val_idx if i not in unlabeled_set]
-        test_idx = [i for i in test_idx if i not in unlabeled_set]
-        inspected_idx = [i for i in inspected_idx if i not in unlabeled_set]
+        train_idx = [i for i in train_idx if i not in strip_set]
+        val_idx = [i for i in val_idx if i not in strip_set]
+        test_idx = [i for i in test_idx if i not in strip_set]
+        inspected_idx = [i for i in inspected_idx if i not in strip_set]
         after = len(train_idx) + len(val_idx) + len(test_idx) + len(inspected_idx)
-        log.info(
-            "Stripped %d unlabeled rows (label=-1) from train/val/test/inspected (%d -> %d)",
-            before - after, before, after,
-        )
+        if before != after:
+            log.info(
+                "Belt-and-braces strip: %d unlabeled/eval rows removed from labelled splits (%d -> %d)",
+                before - after, before, after,
+            )
 
     meta_clean = meta.drop(columns=["_label"])
     if "_eval" in meta_clean.columns:

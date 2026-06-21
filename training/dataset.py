@@ -667,6 +667,22 @@ def build_splits(
         test_idx = [i for i in test_idx if i not in eval_set_filter]
         inspected_idx = [i for i in inspected_idx if i not in eval_set_filter]
 
+    # Strip unlabeled rows (_label == -1). They're carried into inference
+    # via include_unlabeled but must never enter a labelled split, otherwise
+    # CrossEntropyLoss crashes with `t >= 0 && t < n_classes`.
+    if (meta["_label"] == -1).any():
+        unlabeled_set = set(meta.index[meta["_label"] == -1])
+        before = len(train_idx) + len(val_idx) + len(test_idx) + len(inspected_idx)
+        train_idx = [i for i in train_idx if i not in unlabeled_set]
+        val_idx = [i for i in val_idx if i not in unlabeled_set]
+        test_idx = [i for i in test_idx if i not in unlabeled_set]
+        inspected_idx = [i for i in inspected_idx if i not in unlabeled_set]
+        after = len(train_idx) + len(val_idx) + len(test_idx) + len(inspected_idx)
+        log.info(
+            "Stripped %d unlabeled rows (label=-1) from train/val/test/inspected (%d -> %d)",
+            before - after, before, after,
+        )
+
     meta_clean = meta.drop(columns=["_label"])
     if "_eval" in meta_clean.columns:
         meta_clean = meta_clean.drop(columns=["_eval"])
@@ -685,6 +701,10 @@ def build_splits(
 
     # Persist split assignments so we can colour the map later
     split_col = pd.Series("unassigned", index=meta_clean.index)
+    # Mark unlabeled rows up front so labelled splits (which come next) win.
+    unlabeled_mask = meta["_label"] == -1
+    if unlabeled_mask.any():
+        split_col.loc[unlabeled_mask] = "unlabeled"
     split_col.iloc[train_idx] = "train"
     split_col.iloc[val_idx] = "val"
     split_col.iloc[test_idx] = "test"

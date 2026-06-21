@@ -151,12 +151,14 @@ def _metrics_html(counts: dict[str, int], per_country: dict, scored: gpd.GeoData
     country_rows = ""
     for country, cm in sorted(per_country.items()):
         c_tp, c_fp, c_fn = cm.get("TP", 0), cm.get("FP", 0), cm.get("FN", 0)
+        c_up, c_un = cm.get("UP", 0), cm.get("UN", 0)
         c_prec = c_tp / max(c_tp + c_fp, 1)
         c_rec = c_tp / max(c_tp + c_fn, 1)
         country_rows += (
             f"<tr><td>{country}</td>"
             f"<td>{c_prec:.2f}</td><td>{c_rec:.2f}</td>"
-            f"<td>{c_tp}</td><td>{c_fp}</td><td>{c_fn}</td></tr>"
+            f"<td>{c_tp}</td><td>{c_fp}</td><td>{c_fn}</td>"
+            f"<td>{c_up}</td><td>{c_un}</td></tr>"
         )
 
     split_html = _split_metrics_html(scored) if scored is not None else ""
@@ -170,7 +172,8 @@ def _metrics_html(counts: dict[str, int], per_country: dict, scored: gpd.GeoData
         f"{split_html}"
         "<br><b>Per-Country</b>"
         '<table style="width:100%;border-collapse:collapse;margin-top:5px;">'
-        "<tr><th>Country</th><th>Prec</th><th>Rec</th><th>TP</th><th>FP</th><th>FN</th></tr>"
+        "<tr><th>Country</th><th>Prec</th><th>Rec</th>"
+        "<th>TP</th><th>FP</th><th>FN</th><th>UP</th><th>UN</th></tr>"
         f"{country_rows}</table></div>"
     )
 
@@ -548,9 +551,19 @@ def _confusion_matrix_html(y_true, y_pred, classes: list[int],
 def _multiclass_metrics_panel_js(scored: gpd.GeoDataFrame,
                                    names: list[str] | None = None,
                                    colors: list[str] | None = None) -> str:
-    """Per-class precision/recall/F1, macro avg, and confusion matrix — on labeled rows."""
-    labeled = scored[scored["true_label"].isin(range(0, 100))]  # any non-(-1) label
-    labeled = labeled[~labeled["true_label"].isna()]
+    """Per-class precision/recall/F1, macro avg, and confusion matrix.
+
+    Computed on the **val split** only — held-out data the model was scored
+    against for early stopping. Avoids the inflated numbers that would result
+    from including the training set the model already memorized. Falls back to
+    all labeled rows if no val split is available (legacy parquets).
+    """
+    labeled = scored[scored["true_label"].notna() & (scored["true_label"] != -1)]
+    panel_split = "val"
+    if "split" in labeled.columns and (labeled["split"] == "val").any():
+        labeled = labeled[labeled["split"] == "val"]
+    else:
+        panel_split = "all labeled (no val split available)"
     if len(labeled) == 0:
         return ""
     import numpy as np
@@ -579,7 +592,8 @@ def _multiclass_metrics_panel_js(scored: gpd.GeoDataFrame,
     table = (
         f"<div style='font:12px sans-serif;background:white;padding:8px;border:1px solid #ccc;"
         f"max-height:80vh;overflow:auto'>"
-        f"<b>Per-class metrics (n={len(labeled):,} labeled)</b>"
+        f"<b>Per-class metrics</b> "
+        f"<span style='color:#666'>(split: {panel_split}, n={len(labeled):,})</span>"
         f"<table style='border-collapse:collapse;margin-top:4px'>"
         f"<tr><th>Class</th><th>Prec</th><th>Rec</th><th>F1</th><th>TP</th><th>FP</th><th>FN</th></tr>"
         + "".join(rows)

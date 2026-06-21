@@ -97,6 +97,39 @@ def _evaluate(
     return avg_loss, metrics
 
 
+def _write_per_country_metrics(eval_ds, model, criterion, device, bs, out_path, cfg):
+    """Run _evaluate per country on the eval_set and write a JSON summary.
+
+    Uses the candidate CSVs (already loaded in build_splits) to derive a
+    country mapping per candidate_id, then runs a subset evaluation per country.
+    """
+    import json
+    from torch.utils.data import Subset
+    from .inference import _load_candidates_csv
+
+    meta = eval_ds.meta
+    candidates = _load_candidates_csv(cfg.data.candidates_dir, cfg.data.countries)
+    if len(candidates) == 0 or "country" not in candidates.columns:
+        log.warning("candidates missing 'country'; per-country metrics skipped")
+        return
+    cid_to_country = dict(zip(candidates["id"].astype(str), candidates["country"]))
+
+    countries = sorted({cid_to_country.get(str(cid), "unknown") for cid in meta["candidate_id"]})
+    out: dict = {}
+    for country in countries:
+        idx = [i for i, cid in enumerate(meta["candidate_id"])
+               if cid_to_country.get(str(cid)) == country]
+        if not idx:
+            continue
+        sub = Subset(eval_ds, idx)
+        loader = DataLoader(sub, batch_size=bs, shuffle=False, num_workers=0)
+        _, metrics = _evaluate(model, loader, criterion, device)
+        metrics["n"] = len(idx)
+        out[country] = metrics
+        log.info("Eval per country %s (n=%d): %s", country, len(idx), metrics)
+    out_path.write_text(json.dumps(out, indent=2))
+
+
 def _make_optimizer(model, cfg: PipelineConfig, lr_scale: float = 1.0):
     return torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -352,7 +385,7 @@ def train(cfg: PipelineConfig) -> Path:
             patches_dir = download_dir
             log.info("Using cached patches from %s", patches_dir)
 
-    train_ds, val_ds, test_ds, inspected_ds = build_splits(cfg, patches_dir=patches_dir)
+    train_ds, val_ds, test_ds, inspected_ds, eval_ds = build_splits(cfg, patches_dir=patches_dir)
     bs = cfg.training.batch_size
 
     # Use weighted sampler when upsampling minority regions
@@ -456,6 +489,23 @@ def train(cfg: PipelineConfig) -> Path:
             insp_path = output_dir / "inspected_metrics.json"
             import json
             insp_path.write_text(json.dumps(insp_metrics, indent=2))
+
+        # Rachel's representative-sample eval_set: overall + per-country.
+        if eval_ds:
+            model.load_state_dict(load_checkpoint(best_path, device)["model_state_dict"])
+            eval_loader = DataLoader(eval_ds, batch_size=bs, shuffle=False, num_workers=0)
+            _, eval_metrics = _evaluate(model, eval_loader, criterion, device)
+            mlflow.log_metrics({
+                f"eval_{k}": v for k, v in eval_metrics.items() if isinstance(v, (int, float))
+            })
+            log.info("Eval-set metrics (overall): %s", eval_metrics)
+            import json
+            (output_dir / "eval_metrics.json").write_text(json.dumps(eval_metrics, indent=2))
+            _write_per_country_metrics(
+                eval_ds, model, criterion, device, bs,
+                output_dir / "eval_metrics_per_country.json",
+                cfg,
+            )
 
     return best_path
 

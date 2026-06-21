@@ -32,7 +32,8 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 VOLUME_PATH="data/rachel_geometry_candidates/all_countries_zips"
 EXTRACT_DST="/workspace/farm-mapping/data/rachel_geometry_candidates/all_countries"
 
-# Pass RunPod S3 creds via env so rclone uses them without saving to config
+# Pass RunPod S3 creds via env so rclone uses them without saving to config.
+# RunPod's S3 endpoint does not implement the x-amz-acl header, so leave ACL empty.
 export RCLONE_CONFIG_RUNPOD_TYPE=s3
 export RCLONE_CONFIG_RUNPOD_PROVIDER=Other
 export RCLONE_CONFIG_RUNPOD_ENV_AUTH=false
@@ -40,11 +41,13 @@ export RCLONE_CONFIG_RUNPOD_ACCESS_KEY_ID="$RUNPOD_S3_ACCESS_KEY_ID"
 export RCLONE_CONFIG_RUNPOD_SECRET_ACCESS_KEY="$RUNPOD_S3_SECRET_ACCESS_KEY"
 export RCLONE_CONFIG_RUNPOD_ENDPOINT="$RUNPOD_S3_ENDPOINT"
 export RCLONE_CONFIG_RUNPOD_REGION="$RUNPOD_S3_REGION"
+export RCLONE_CONFIG_RUNPOD_ACL=""
 
 echo "=== 1. Drive -> RunPod volume (zip staging) ==="
 rclone sync \
   drive: \
   "runpod:${RUNPOD_NETWORK_VOLUME_ID}/${VOLUME_PATH}/" \
+  --s3-acl="" \
   --progress --transfers=4 --checkers=8 --update
 
 echo

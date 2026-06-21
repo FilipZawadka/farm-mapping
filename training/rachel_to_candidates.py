@@ -220,6 +220,19 @@ def convert(
     if "viz_status" in df.columns:
         df["viz_status"] = df["viz_status"].fillna("")
 
+    # New columns from Rachel's v3 rebuild (default to safe sentinels when absent
+    # so older parquets keep working).
+    if "visual_label" in df.columns:
+        df["visual_label"] = df["visual_label"].fillna("")
+    if "label_source" in df.columns:
+        df["label_source"] = df["label_source"].fillna("")
+    if "eval_set" in df.columns:
+        df["eval_set"] = df["eval_set"].fillna(False).astype(bool).astype(int)
+    else:
+        df["eval_set"] = 0
+    if "random_sample" in df.columns:
+        df["random_sample"] = df["random_sample"].fillna(False).astype(bool).astype(int)
+
     # Infer US states from coordinates
     us_mask = df["country_key"] == "united_states"
     df["state"] = ""
@@ -238,6 +251,7 @@ def convert(
     # Keep candidate columns
     keep = ["id", "name", "lat", "lng", "species", "category", "source",
             "country", "state", "label", "region", "viz_status",
+            "visual_label", "label_source", "eval_set", "random_sample",
             "num_bldgs", "total_area_m2", "median_area", "template_score_if"]
     out_df = df[[c for c in keep if c in df.columns]].copy()
 
@@ -248,7 +262,11 @@ def convert(
         n_pos = (grp["label"] == 1).sum()
         n_neg = (grp["label"] == 0).sum()
         n_unk = (grp["label"] == -1).sum()
-        log.info("Saved %d candidates to %s (pos=%d, neg=%d, unlabeled=%d)", len(grp), path, n_pos, n_neg, n_unk)
+        n_eval = int(grp["eval_set"].sum()) if "eval_set" in grp.columns else 0
+        log.info(
+            "Saved %d candidates to %s (pos=%d, neg=%d, unlabeled=%d, eval_set=%d)",
+            len(grp), path, n_pos, n_neg, n_unk, n_eval,
+        )
 
     log.info("Done. Total: %d candidates", len(out_df))
     return out_df

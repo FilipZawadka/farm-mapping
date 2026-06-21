@@ -584,6 +584,20 @@ def build_splits(
 
     meta["_label"] = meta["candidate_id"].astype(str).map(label_map).astype(int)
 
+    # Rachel's representative-sample eval set: rows flagged eval_set=True must
+    # NEVER enter train/val/test/inspected. They get their own "eval" split.
+    eval_idx: list[int] = []
+    if "eval_set" in candidates.columns:
+        eval_map = dict(zip(
+            candidates["id"].astype(str),
+            candidates["eval_set"].fillna(0).astype(int),
+        ))
+        meta["_eval"] = meta["candidate_id"].astype(str).map(eval_map).fillna(0).astype(int)
+        eval_idx = list(meta.index[meta["_eval"] == 1])
+        if eval_idx:
+            log.info("eval_set hold-out: %d candidates (excluded from train/val/test/inspected)", len(eval_idx))
+    eval_set_filter = set(eval_idx)
+
     rng = np.random.default_rng(cfg.training.seed)
 
     # If inspected_as_test, hold out inspected candidates as a separate eval set
@@ -644,16 +658,28 @@ def build_splits(
             meta, cfg, rng,
         )
 
+    # Strip any eval_set rows that leaked into train/val/test/inspected.
+    # The split functions don't know about _eval, so this is the safety net
+    # that guarantees the "MUST never enter train/val/test" contract.
+    if eval_set_filter:
+        train_idx = [i for i in train_idx if i not in eval_set_filter]
+        val_idx = [i for i in val_idx if i not in eval_set_filter]
+        test_idx = [i for i in test_idx if i not in eval_set_filter]
+        inspected_idx = [i for i in inspected_idx if i not in eval_set_filter]
+
     meta_clean = meta.drop(columns=["_label"])
+    if "_eval" in meta_clean.columns:
+        meta_clean = meta_clean.drop(columns=["_eval"])
 
     split_mode = "inspected_holdout" if inspected_idx else ("region" if bool(cfg.data.train_regions) else "random")
     log.info(
-        "Splits (%s): train=%d  val=%d  test=%d  inspected=%d  (pos ratio: %.2f)",
+        "Splits (%s): train=%d  val=%d  test=%d  inspected=%d  eval=%d  (pos ratio: %.2f)",
         split_mode,
         len(train_idx),
         len(val_idx),
         len(test_idx),
         len(inspected_idx),
+        len(eval_idx),
         meta["_label"].mean(),
     )
 
@@ -664,6 +690,9 @@ def build_splits(
     split_col.iloc[test_idx] = "test"
     if inspected_idx:
         split_col.iloc[inspected_idx] = "inspected"
+    if eval_idx:
+        # eval overrides any prior assignment -- absolute hold-out.
+        split_col.iloc[eval_idx] = "eval"
     splits_df = meta_clean[["candidate_id"]].copy()
     splits_df["split"] = split_col
     splits_dir = patches_root / "splits"
@@ -699,6 +728,10 @@ def build_splits(
     if inspected_idx:
         inspected_ds = PatchDataset(meta_clean.iloc[inspected_idx], candidates, patches_root, augment=False, **ds_kwargs)
 
+    eval_ds = None
+    if eval_idx:
+        eval_ds = PatchDataset(meta_clean.iloc[eval_idx], candidates, patches_root, augment=False, **ds_kwargs)
+
     # Compute per-sample weights for region and/or class upsampling.
     # When both are enabled, weights multiply: each sample's draw probability
     # is proportional to (1/n_country) * (1/n_class), giving roughly equal
@@ -720,7 +753,7 @@ def build_splits(
     elif class_w is not None:
         train_ds.sample_weights = class_w
 
-    return train_ds, val_ds, test_ds, inspected_ds
+    return train_ds, val_ds, test_ds, inspected_ds, eval_ds
 
 
 def _compute_class_weights(

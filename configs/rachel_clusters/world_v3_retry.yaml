@@ -1,0 +1,25 @@
+# Retry patch extraction for the ~3.4k clusters that failed in earlier runs.
+# Same imagery_config_hash as world_v3_* so any recovered patches feed straight
+# into the in-flight world_v3 inference. retry_failed clears failed_patches.csv
+# and re-attempts each failed candidate.
+
+run_name: "world_v3_retry"
+
+data:
+  candidates_dir: data/rachel_geometry_candidates/candidates_world_v3_binary
+  parquet_source: data/rachel_geometry_candidates/all_countries/all_clusters_v3.parquet
+  inspected_as_test: true
+  include_unlabeled: true
+  label_mode: binary
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches
+  num_workers: 16
+  retry_failed: true

@@ -594,6 +594,14 @@ visualization:
 
 ---
 
+## 8b. Evaluation framework
+
+See [EVAL_FRAMEWORK.md](./EVAL_FRAMEWORK.md) for how labelled clusters are
+partitioned into **training countries** (BRA · CHL · MEX · THA · USA — CNN
+train/val/test/eval, plus IF fitted on USA-DMV only) and
+**generalization-testing countries** (BGD, NGA, extensible — held out OOD
+for both CNN and IF). Together these form the **Labeled countries** pool.
+
 ## 9. Where to look next
 
 - Reproducing the local Rachel baseline → `configs/rachel_clusters/rachel_baseline.yaml`,

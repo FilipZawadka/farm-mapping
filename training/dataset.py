@@ -598,6 +598,30 @@ def build_splits(
             log.info("eval_set hold-out: %d candidates (excluded from train/val/test/inspected)", len(eval_idx))
     eval_set_filter = set(eval_idx)
 
+    # Generalization-testing countries: any labelled candidate whose ADM0 is
+    # in cfg.data.generalization_countries is forced into a "generalization"
+    # split. Never enters train/val/test/eval/inspected. See
+    # docs/EVAL_FRAMEWORK.md.
+    gen_idx: list[int] = []
+    gen_iso = {iso.upper() for iso in (getattr(cfg.data, "generalization_countries", []) or [])}
+    if gen_iso:
+        # Candidate IDs follow the `{ADM0}_cluster_{n}` convention from
+        # rachel_to_candidates.py, so the prefix before the first underscore
+        # is the ADM0 ISO code.
+        meta_iso = (
+            meta["candidate_id"].astype(str)
+            .str.split("_", n=1, expand=True)[0].str.upper()
+        )
+        gen_mask = meta_iso.isin(gen_iso) & (meta["_label"] != -1)
+        gen_idx = list(meta.index[gen_mask])
+        if gen_idx:
+            log.info(
+                "generalization hold-out: %d candidates from %s "
+                "(excluded from train/val/test/eval/inspected)",
+                len(gen_idx), sorted(gen_iso),
+            )
+    gen_set_filter = set(gen_idx)
+
     rng = np.random.default_rng(cfg.training.seed)
 
     # Pool of rows eligible for train/val/test: labeled (_label != -1) and not
@@ -607,6 +631,8 @@ def build_splits(
     labeled_pool_mask = (meta["_label"] != -1)
     if eval_set_filter:
         labeled_pool_mask = labeled_pool_mask & ~meta.index.isin(eval_set_filter)
+    if gen_set_filter:
+        labeled_pool_mask = labeled_pool_mask & ~meta.index.isin(gen_set_filter)
     labeled_meta = meta[labeled_pool_mask]
 
     # If inspected_as_test, hold out inspected candidates as a separate eval set
@@ -676,9 +702,14 @@ def build_splits(
             labeled_meta, cfg, rng,
         )
 
-    # Belt-and-braces: strip any eval_set / unlabeled rows that somehow
-    # survived the input-filter (e.g. region-split path with mixed inputs).
-    strip_set = set(eval_set_filter) | set(meta.index[meta["_label"] == -1])
+    # Belt-and-braces: strip any eval_set / generalization / unlabeled rows
+    # that somehow survived the input-filter (e.g. region-split path with mixed
+    # inputs).
+    strip_set = (
+        set(eval_set_filter)
+        | set(gen_set_filter)
+        | set(meta.index[meta["_label"] == -1])
+    )
     if strip_set:
         before = len(train_idx) + len(val_idx) + len(test_idx) + len(inspected_idx)
         train_idx = [i for i in train_idx if i not in strip_set]
@@ -698,13 +729,14 @@ def build_splits(
 
     split_mode = "inspected_holdout" if inspected_idx else ("region" if bool(cfg.data.train_regions) else "random")
     log.info(
-        "Splits (%s): train=%d  val=%d  test=%d  inspected=%d  eval=%d  (pos ratio: %.2f)",
+        "Splits (%s): train=%d  val=%d  test=%d  inspected=%d  eval=%d  generalization=%d  (pos ratio: %.2f)",
         split_mode,
         len(train_idx),
         len(val_idx),
         len(test_idx),
         len(inspected_idx),
         len(eval_idx),
+        len(gen_idx),
         meta["_label"].mean(),
     )
 
@@ -722,6 +754,9 @@ def build_splits(
     if eval_idx:
         # eval overrides any prior assignment -- absolute hold-out.
         split_col.iloc[eval_idx] = "eval"
+    if gen_idx:
+        # generalization overrides any prior assignment -- absolute OOD hold-out.
+        split_col.iloc[gen_idx] = "generalization"
     splits_df = meta_clean[["candidate_id"]].copy()
     splits_df["split"] = split_col
     splits_dir = patches_root / "splits"
@@ -761,6 +796,10 @@ def build_splits(
     if eval_idx:
         eval_ds = PatchDataset(meta_clean.iloc[eval_idx], candidates, patches_root, augment=False, **ds_kwargs)
 
+    gen_ds = None
+    if gen_idx:
+        gen_ds = PatchDataset(meta_clean.iloc[gen_idx], candidates, patches_root, augment=False, **ds_kwargs)
+
     # Compute per-sample weights for region and/or class upsampling.
     # When both are enabled, weights multiply: each sample's draw probability
     # is proportional to (1/n_country) * (1/n_class), giving roughly equal
@@ -782,7 +821,7 @@ def build_splits(
     elif class_w is not None:
         train_ds.sample_weights = class_w
 
-    return train_ds, val_ds, test_ds, inspected_ds, eval_ds
+    return train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds
 
 
 def _compute_class_weights(

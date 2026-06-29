@@ -115,6 +115,11 @@ class DataConfig(BaseModel):
     train_regions: Optional[list[str]] = None
     val_regions: Optional[list[str]] = None
     test_regions: Optional[list[str]] = None
+    # Hold-out countries (ADM0 ISO codes) used to measure CNN out-of-distribution
+    # generalisation. Any candidate whose ADM0 is in this list is forced into a
+    # "generalization" split: never enters train/val/test/eval/inspected. See
+    # docs/EVAL_FRAMEWORK.md.
+    generalization_countries: list[str] = Field(default_factory=list)
     candidates_dir: str = "data/candidates"
     # Optional: load candidates directly from a parquet file instead of
     # generating them from Farm Transparency / OSM / building footprints.

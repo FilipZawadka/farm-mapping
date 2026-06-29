@@ -97,6 +97,19 @@ def _attach_labels(result, candidates):
         result[col] = result["candidate_id"].astype(str).map(mapping).fillna(fill)
     result["true_label"] = result["true_label"].astype(int)
 
+    # Propagate diagnostic columns from the source parquet so reviewers can
+    # audit "bad labels" without having to re-join. Each column is optional;
+    # only attach the ones the candidate CSV actually carries.
+    for diag_col in (
+        "original_label", "standardized_label", "visual_label",
+        "label_source", "notes", "eval_set", "random_sample", "viz_status",
+    ):
+        if diag_col not in candidates.columns:
+            continue
+        mapping = dict(zip(cid_str, candidates[diag_col]))
+        fill = 0 if diag_col in ("eval_set", "random_sample") else ""
+        result[diag_col] = result["candidate_id"].astype(str).map(mapping).fillna(fill)
+
 
 def _find_patches_root(output_dir: Path) -> Path:
     """Walk up from *output_dir* to find the ``patches/`` ancestor."""

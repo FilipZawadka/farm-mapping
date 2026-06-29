@@ -385,7 +385,7 @@ def train(cfg: PipelineConfig) -> Path:
             patches_dir = download_dir
             log.info("Using cached patches from %s", patches_dir)
 
-    train_ds, val_ds, test_ds, inspected_ds, eval_ds = build_splits(cfg, patches_dir=patches_dir)
+    train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds = build_splits(cfg, patches_dir=patches_dir)
     bs = cfg.training.batch_size
 
     # Use weighted sampler when upsampling minority regions
@@ -504,6 +504,25 @@ def train(cfg: PipelineConfig) -> Path:
             _write_per_country_metrics(
                 eval_ds, model, criterion, device, bs,
                 output_dir / "eval_metrics_per_country.json",
+                cfg,
+            )
+
+        # Out-of-distribution generalization countries (BGD/NGA/...).
+        if gen_ds:
+            model.load_state_dict(load_checkpoint(best_path, device)["model_state_dict"])
+            gen_loader = DataLoader(gen_ds, batch_size=bs, shuffle=False, num_workers=0)
+            _, gen_metrics = _evaluate(model, gen_loader, criterion, device)
+            mlflow.log_metrics({
+                f"gen_{k}": v for k, v in gen_metrics.items() if isinstance(v, (int, float))
+            })
+            log.info("Generalization metrics (overall): %s", gen_metrics)
+            import json
+            (output_dir / "generalization_metrics.json").write_text(
+                json.dumps(gen_metrics, indent=2)
+            )
+            _write_per_country_metrics(
+                gen_ds, model, criterion, device, bs,
+                output_dir / "generalization_metrics_per_country.json",
                 cfg,
             )
 

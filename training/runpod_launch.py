@@ -193,21 +193,41 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
     venv = "/workspace/farm-venv"
     py = f"{venv}/bin/python"
 
+    repo = getattr(cfg.runpod, "github_repo", "")
+    branch = getattr(cfg.runpod, "github_branch", "main")
+
+    # Fast path: try `git fetch && git reset`. If anything errors (corrupted
+    # .git from a quota-exceeded pod, or no .git at all), fall back to a
+    # fresh clone of just `.git/` into /tmp (container disk, no quota), then
+    # move it onto the volume. Avoids touching the unrelated data/ tree.
+    git_sync = (
+        f"(cd {code_dir} && git fetch origin"
+        f" && git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo {branch}))"
+        f" || (echo 're-cloning {code_dir} from {repo} via /tmp'"
+        f" && rm -rf {code_dir}/.git /tmp/__repo_tmp"
+        f" && git clone --branch {branch} --single-branch --no-checkout {repo} /tmp/__repo_tmp"
+        f" && mv /tmp/__repo_tmp/.git {code_dir}/.git"
+        f" && rm -rf /tmp/__repo_tmp"
+        f" && cd {code_dir} && git reset --hard origin/{branch})"
+    )
+
     parts = [
         _SCRIPT_PREAMBLE,
         _LOAD_RUNPOD_ENV,
         f"git config --global --add safe.directory {code_dir}",
         f"cd {code_dir}",
-        # Force-sync to origin/main. The previous `git pull --ff-only || true`
-        # silently swallowed failures when a previous pod left stale modifications
-        # on the network volume, causing later pods to run with old code.
-        "git fetch origin",
-        "git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo main)",
+        git_sync,
+        f"cd {code_dir}",
         _run_dir_cmd(cfg, config_name, "pipeline"),
         f"[ -d {venv} ]"
         f" && echo 'farm-venv found, skipping install'"
         f" || (python -m venv {venv}"
         f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)",
+        # If the config points at all_clusters_v4.parquet but the file doesn't
+        # exist yet, rebuild it from the seed parquets in data_seed/. Idempotent.
+        f"if [ ! -f data/rachel_geometry_candidates/all_countries/all_clusters_v4.parquet ]"
+        f" && grep -q all_clusters_v4 configs/{config_name};"
+        f" then {py} scripts/merge_clusters_v4.py; fi",
         f"echo '=== running pipeline ==='",
         f"{py} -u -m training.run_pipeline --config configs/{config_name}"
         + (f" --steps {' '.join(steps)}" if steps else ""),

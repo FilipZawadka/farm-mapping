@@ -28,6 +28,10 @@ ROOT = Path("/workspace/farm-mapping/data/rachel_geometry_candidates/all_countri
 V2 = ROOT / "all_clusters_v2.parquet"
 OUT = ROOT / "all_clusters_v4.parquet"
 
+# Fallback location for files Rachel produces that aren't on the volume yet.
+# Small (~360 KB) so they're committed to the repo for self-contained pod runs.
+SEED = Path(__file__).resolve().parent.parent / "data_seed"
+
 TRAIN_COUNTRIES = [
     ("USA", "USA"),
     ("BRA", "Brazil"),
@@ -78,8 +82,18 @@ def main() -> None:
     for iso, country_dir in TRAIN_COUNTRIES + GENERALIZATION_COUNTRIES:
         path = ROOT / country_dir / f"{iso}_selected_clusters_for_analysis.parquet"
         if not path.exists():
-            print(f"  SKIP {iso} ({country_dir}): {path} not found")
-            continue
+            # Fall back to the repo-committed seed copy.
+            seed = SEED / country_dir / f"{iso}_selected_clusters_for_analysis.parquet"
+            if seed.exists():
+                print(f"  using seed copy: {seed}")
+                # Mirror to the volume so subsequent stages (candidates,
+                # patch_extraction) can find it at the canonical path.
+                path.parent.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copy2(seed, path)
+            else:
+                print(f"  SKIP {iso} ({country_dir}): neither {path} nor {seed} found")
+                continue
         df = pd.read_parquet(path)
         df["ADM0"] = iso
         df = _normalize(df, iso=iso)

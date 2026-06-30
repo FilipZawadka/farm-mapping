@@ -622,6 +622,21 @@ def build_splits(
             )
     gen_set_filter = set(gen_idx)
 
+    # Generalization takes priority over eval_set: any candidate that is
+    # both eval_set=True AND in a generalization country goes to the
+    # generalization split, not eval. Otherwise eval_ds would be
+    # contaminated with OOD rows (Rachel's representative sample is only
+    # meaningful inside the training countries).
+    if gen_set_filter and eval_idx:
+        before = len(eval_idx)
+        eval_idx = [i for i in eval_idx if i not in gen_set_filter]
+        eval_set_filter = set(eval_idx)
+        if before != len(eval_idx):
+            log.info(
+                "eval_set ∩ generalization: %d rows reassigned to generalization",
+                before - len(eval_idx),
+            )
+
     rng = np.random.default_rng(cfg.training.seed)
 
     # Pool of rows eligible for train/val/test: labeled (_label != -1) and not

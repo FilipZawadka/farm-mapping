@@ -99,11 +99,11 @@ def _confusion_counts(scored: gpd.GeoDataFrame) -> dict[str, int]:
 
 
 def _split_metrics_html(scored: gpd.GeoDataFrame) -> str:
-    """Build per-split (train/val/test/inspected) metrics rows."""
+    """Build per-split (train/val/test/inspected/eval/generalization) metrics rows."""
     if "split" not in scored.columns:
         return ""
     rows = ""
-    for split in ("train", "val", "test", "inspected"):
+    for split in ("train", "val", "test", "inspected", "eval", "generalization"):
         subset = scored[scored["split"] == split]
         if len(subset) == 0:
             continue
@@ -275,7 +275,7 @@ def _build_split_layers(scored: gpd.GeoDataFrame):
     if "split" not in scored.columns:
         return ""
     layers_js = ""
-    known = ("train", "val", "test", "inspected")
+    known = ("train", "val", "test", "inspected", "eval", "generalization")
     seen: set[str] = set()
     for split in known:
         subset = scored[scored["split"] == split]

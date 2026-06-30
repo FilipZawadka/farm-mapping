@@ -648,6 +648,47 @@ def build_splits(
         labeled_pool_mask = labeled_pool_mask & ~meta.index.isin(eval_set_filter)
     if gen_set_filter:
         labeled_pool_mask = labeled_pool_mask & ~meta.index.isin(gen_set_filter)
+
+    # Strict whitelist: when cfg.data.training_countries is set, any labelled
+    # row whose ADM0 is NOT in (training_countries ∪ generalization_countries)
+    # is removed from the labeled pool -- it will end up in the "unlabeled"
+    # split. This enforces Rachel's framework (see docs/EVAL_FRAMEWORK.md):
+    # only the named training countries contribute to train/val/test/inspected.
+    train_iso = {iso.upper() for iso in (getattr(cfg.data, "training_countries", []) or [])}
+    if train_iso:
+        allowed = train_iso | gen_iso  # gen rows are already routed elsewhere
+        meta_iso_all = (
+            meta["candidate_id"].astype(str)
+            .str.split("_", n=1, expand=True)[0].str.upper()
+        )
+        non_allowed_mask = labeled_pool_mask & ~meta_iso_all.isin(allowed)
+        n_demoted = int(non_allowed_mask.sum())
+        if n_demoted:
+            log.info(
+                "training-country whitelist: demoting %d labelled rows outside %s "
+                "to the unlabeled split",
+                n_demoted, sorted(train_iso),
+            )
+            labeled_pool_mask = labeled_pool_mask & ~non_allowed_mask
+            meta.loc[non_allowed_mask, "_label"] = -1
+
+    # DMV protection: Rachel reserves rows whose label_source contains "DMV"
+    # for IF fitting. To prevent val/test from being inflated by this easy
+    # clean subset, force DMV rows into the train split. Their labels stay
+    # available for training (CNN train ≡ IF fit) but they never enter the
+    # holdout slices.
+    dmv_idx: list[int] = []
+    if getattr(cfg.data, "dmv_force_to_train_only", False) and "label_source" in candidates.columns:
+        ls_map = dict(zip(candidates["id"].astype(str), candidates["label_source"].fillna("")))
+        dmv_mask = (
+            meta["candidate_id"].astype(str).map(ls_map).fillna("")
+            .astype(str).str.contains("DMV", case=False, na=False)
+        )
+        dmv_idx = list(meta.index[dmv_mask & labeled_pool_mask])
+        if dmv_idx:
+            log.info("DMV protection: %d rows pinned to train", len(dmv_idx))
+    dmv_set = set(dmv_idx)
+
     labeled_meta = meta[labeled_pool_mask]
 
     # If inspected_as_test, hold out inspected candidates as a separate eval set
@@ -716,6 +757,21 @@ def build_splits(
         train_idx, val_idx, test_idx = _random_split_indices(
             labeled_meta, cfg, rng,
         )
+
+    # DMV pin: any DMV row that landed in val/test/inspected is pulled into train.
+    if dmv_set:
+        moved_v = [i for i in val_idx if i in dmv_set]
+        moved_t = [i for i in test_idx if i in dmv_set]
+        moved_i = [i for i in inspected_idx if i in dmv_set]
+        if moved_v or moved_t or moved_i:
+            log.info(
+                "DMV protection: moved %d rows from val/test/inspected to train",
+                len(moved_v) + len(moved_t) + len(moved_i),
+            )
+            val_idx = [i for i in val_idx if i not in dmv_set]
+            test_idx = [i for i in test_idx if i not in dmv_set]
+            inspected_idx = [i for i in inspected_idx if i not in dmv_set]
+            train_idx = list(dict.fromkeys(train_idx + moved_v + moved_t + moved_i))
 
     # Belt-and-braces: strip any eval_set / generalization / unlabeled rows
     # that somehow survived the input-filter (e.g. region-split path with mixed

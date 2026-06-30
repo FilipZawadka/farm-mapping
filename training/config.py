@@ -120,6 +120,16 @@ class DataConfig(BaseModel):
     # "generalization" split: never enters train/val/test/eval/inspected. See
     # docs/EVAL_FRAMEWORK.md.
     generalization_countries: list[str] = Field(default_factory=list)
+    # Strict whitelist of ADM0 ISO codes whose labelled rows are allowed in
+    # train/val/test/inspected/eval. Any labelled candidate outside this list
+    # (and outside generalization_countries) is demoted to the "unlabeled"
+    # split -- still scored at inference but never seen by the trainer.
+    # Empty list = no restriction (legacy behaviour).
+    training_countries: list[str] = Field(default_factory=list)
+    # If True, rows whose label_source contains "DMV" (Rachel's clean
+    # poultry set, reserved for IF fitting) are forced into the train split.
+    # Prevents the val/test metrics from being inflated by an easy subset.
+    dmv_force_to_train_only: bool = False
     candidates_dir: str = "data/candidates"
     # Optional: load candidates directly from a parquet file instead of
     # generating them from Farm Transparency / OSM / building footprints.

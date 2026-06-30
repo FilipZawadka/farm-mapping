@@ -81,7 +81,7 @@ training:
 mlflow:
   tracking_uri: ./mlruns
   experiment_name: world_v5_three_class
-  log_model: false   # avoid the 270 MB mlflow artifact that ate the quota in v4
+  log_model: true
 
 runpod:
   gpu_type: "NVIDIA A40"

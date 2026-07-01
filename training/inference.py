@@ -168,6 +168,18 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
         if cand_parquet.exists():
             candidates = pd.read_parquet(cand_parquet)
 
+    # Optional: skip the ~124k unlabelled rest-of-world candidates so we only
+    # score the ~17k labelled slices (train/val/test/inspected/eval/gen).
+    # Roughly 8x faster; the world map won't have UP/UN points.
+    labeled_only = getattr(cfg.inference, "labeled_only", False)
+    if labeled_only and "label" in candidates.columns:
+        before = len(candidates)
+        candidates = candidates[candidates["label"].astype(int) != -1].copy()
+        log.info(
+            "labeled_only=True: filtered candidates from %d to %d (dropped %d unlabelled)",
+            before, len(candidates), before - len(candidates),
+        )
+
     # Filter meta to only patches matching this config's candidates
     config_ids = set(candidates["id"].astype(str))
     meta = meta[meta["candidate_id"].astype(str).isin(config_ids)].reset_index(drop=True)
@@ -251,10 +263,20 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Score candidates with trained model")
     parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument(
+        "--labeled-only", action="store_true",
+        help=(
+            "Only score candidates with a label (drops the ~124k rest-of-world "
+            "unlabelled rows). ~8x faster; the world map won't have UP/UN "
+            "points but every metric slice is unaffected."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = resolve_paths(load_config(args.config))
+    if args.labeled_only:
+        cfg.inference.labeled_only = True
     score_candidates(cfg)
 
 

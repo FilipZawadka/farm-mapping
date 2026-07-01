@@ -476,6 +476,11 @@ class InferenceConfig(BaseModel):
     checkpoint: str = "output/best_model.pt"
     threshold: float = 0.5
     confidence_tiers: ConfidenceTiers = Field(default_factory=ConfidenceTiers)
+    # If True, inference skips the ~124k unlabelled rest-of-world candidates
+    # and only scores rows with a label (train/val/test/inspected/eval/gen).
+    # ~8x faster; the world map lacks UP/UN points but every metric slice is
+    # unchanged. Override on the CLI via `--labeled-only`.
+    labeled_only: bool = False
 
 
 class VizConfig(BaseModel):

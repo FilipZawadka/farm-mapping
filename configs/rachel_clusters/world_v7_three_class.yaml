@@ -1,0 +1,139 @@
+# ============================================================================
+# world_v7_three_class -- v6's no-balancing + LIGHT class weight to rescue
+# OtherFarm.
+#
+# v6 (no balancing) collapsed OtherFarm entirely: F1_class2 = 0.000 across
+# test / eval / generalization. Model only predicted NotFarm or Poultry.
+# v5 (full balancing) over-corrected and confused Poultry with OtherFarm.
+#
+# v7 tries the middle: keep all sampler balancing OFF (natural country and
+# class distributions) but add a light CrossEntropyLoss class weight so the
+# gradient on OtherFarm samples counts ~2.9x more than Poultry samples.
+#
+# Ratios: [NotFarm=1.0, Poultry=0.7, OtherFarm=2.0]
+#   - Poultry down-weighted 0.7x (there are 8,571 rows -- lots of gradient)
+#   - OtherFarm up-weighted 2.0x (only 2,038 rows -- extra push per sample)
+#   - NotFarm baseline
+#
+# Also flips inference to labeled-only by default (~17k rows, ~5 min vs
+# ~30 min for the full 141k-patch world sweep). Toggle labeled_only: false
+# on the config to get a full world map.
+#
+# Framework identical to v5/v6: training_countries whitelist,
+# generalization_countries=[BGD, NGA], DMV-forced-to-train.
+# ============================================================================
+
+run_name: "world_v7_three_class"
+
+data:
+  candidates_dir: data/rachel_geometry_candidates/candidates_world_v7_three_class
+  parquet_source: data/rachel_geometry_candidates/all_countries/all_clusters_v4.parquet
+  inspected_as_test: true
+  include_unlabeled: true
+  label_mode: three_class
+  training_countries: [USA, BRA, CHL, MEX, THA]
+  generalization_countries: [BGD, NGA]
+  dmv_force_to_train_only: true
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches
+  num_workers: 16
+
+model:
+  architecture: resnet50
+  hub_name: microsoft/resnet-50
+  pretrained: true
+  num_classes: 3
+  input_channels: 4
+  freeze_backbone_epochs: 5
+  class_names: [NotFarm, Poultry, OtherFarm]
+  class_colors: ["#95a5a6", "#e74c3c", "#3498db"]
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 10
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+  upsample_minority_regions: false
+  balanced_country_splits: false
+  balanced_class_sampling: false
+  # Light class weight to rescue OtherFarm without collapsing Poultry
+  # (see slot v5 vs v6 metrics for context). Weights are per-class factors
+  # applied inside CrossEntropyLoss.
+  class_weight: [1.0, 0.7, 2.0]  # [NotFarm, Poultry, OtherFarm]
+  channel_subset: [B2, B3, B4, NDWI]
+  crop_center_px: 64
+  augmentation:
+    enabled: true
+    horizontal_flip: { enabled: true, probability: 0.5 }
+    vertical_flip: { enabled: true, probability: 0.5 }
+    random_rotation_90: { enabled: true, probability: 0.75 }
+    continuous_rotation: { enabled: true, probability: 0.3, max_degrees: 15 }
+    random_resized_crop: { enabled: true, probability: 0.3, scale_min: 0.8, scale_max: 1.0 }
+    brightness_jitter: { enabled: true, probability: 0.5, range_min: 0.85, range_max: 1.15 }
+    per_band_jitter: { enabled: true, probability: 0.3, range_min: 0.95, range_max: 1.05 }
+    gaussian_noise: { enabled: true, probability: 0.3, sigma: 0.02 }
+    channel_dropout: { enabled: true, probability: 0.1, max_channels: 1 }
+    cutout: { enabled: false }
+    recompute_indices: false
+
+mlflow:
+  tracking_uri: ./mlruns
+  experiment_name: world_v7_three_class
+  log_model: true
+
+runpod:
+  gpu_type: "NVIDIA A40"
+  gpu_fallbacks:
+    - "NVIDIA L4"
+    - "NVIDIA L40"
+    - "NVIDIA L40S"
+    - "NVIDIA RTX A5000"
+    - "NVIDIA RTX A6000"
+    - "NVIDIA RTX 6000 Ada Generation"
+    - "NVIDIA GeForce RTX 4090"
+  cloud_type: "SECURE"
+  docker_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+  volume_mount: /workspace
+  code_dir: /workspace/farm-mapping
+  github_repo: https://github.com/FilipZawadka/farm-mapping.git
+  github_branch: main
+  api_key_env: RUNPOD_API_KEY
+  network_volume_id: r8nyom4e4e
+  cpu_instance_id: "cpu3g-8-32"
+  cpu_fallbacks:
+    - "cpu3g-4-16"
+    - "cpu3c-8-16"
+    - "cpu3m-4-32"
+  auto_terminate: true
+
+inference:
+  checkpoint: data/output/world_v7_three_class/best_model.pt
+  threshold: 0.5
+  # Only score labelled candidates (~17k rows). ~8x faster than the full
+  # 141k-patch world sweep. Toggle to false when a global map is needed.
+  labeled_only: true
+  confidence_tiers:
+    high: 0.9
+    medium: 0.7
+    low: 0.4
+
+visualization:
+  output_dir: output/maps_world_v7_three_class
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: true

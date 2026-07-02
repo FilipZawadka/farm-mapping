@@ -326,11 +326,22 @@ def extract_patches(
     band_names = [b for s in sources for b in s.band_names()]
     imagery_meta = imagery_metadata(patch_cfg, band_names)
 
-    # Skip candidates already present in patch_meta.csv (resume support)
+    # Skip candidates already present in patch_meta.csv for THIS imagery
+    # config (resume support). Filtering by imagery_config_hash so a config
+    # change (e.g. cloud_mask, bands) triggers fresh extraction instead of
+    # skipping candidates that only have patches under the previous hash.
     meta_path = patches_root / "patch_meta.csv"
     skip_ids: set[str] = set()
     if meta_path.exists():
-        skip_ids = set(pd.read_csv(meta_path, usecols=["candidate_id"])["candidate_id"].astype(str))
+        try:
+            meta_df = pd.read_csv(meta_path, usecols=["candidate_id", "imagery_config_hash"])
+            skip_ids = set(
+                meta_df[meta_df["imagery_config_hash"].astype(str) == imagery_hash]["candidate_id"].astype(str)
+            )
+        except (ValueError, KeyError):
+            # Legacy meta files that predate imagery_config_hash — fall back
+            # to skipping all listed candidates.
+            skip_ids = set(pd.read_csv(meta_path, usecols=["candidate_id"])["candidate_id"].astype(str))
 
     # Also skip previously failed patches (unless retry_failed is set)
     if not patch_cfg.retry_failed:

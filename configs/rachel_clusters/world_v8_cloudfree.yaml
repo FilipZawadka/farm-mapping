@@ -36,6 +36,9 @@ patches:
   cloud_mask: scl
   output_dir: data/patches
   num_workers: 16
+  # fresh hash from cloud_mask -> retry candidates that failed under the
+  # previous imagery config (they may succeed with the wider scene filter).
+  retry_failed: true
 
 model:
   architecture: resnet50

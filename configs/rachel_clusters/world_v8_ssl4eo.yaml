@@ -105,7 +105,7 @@ runpod:
   volume_mount: /workspace
   code_dir: /workspace/farm-mapping
   github_repo: https://github.com/FilipZawadka/farm-mapping.git
-  github_branch: main
+  github_branch: more_cnn_tests
   api_key_env: RUNPOD_API_KEY
   network_volume_id: r8nyom4e4e
   cpu_instance_id: "cpu3g-8-32"

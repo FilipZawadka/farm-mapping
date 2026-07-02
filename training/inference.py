@@ -61,8 +61,20 @@ def _load_model(cfg: PipelineConfig, device: torch.device):
     return model
 
 
+def _tta_probs(model, batch_x: torch.Tensor) -> torch.Tensor:
+    """Average softmax probabilities over the 8 dihedral transforms."""
+    probs_sum = None
+    for k in range(4):
+        rotated = torch.rot90(batch_x, k=k, dims=(2, 3))
+        for flip in (False, True):
+            x = torch.flip(rotated, dims=(3,)) if flip else rotated
+            p = torch.softmax(model(x), dim=1)
+            probs_sum = p if probs_sum is None else probs_sum + p
+    return probs_sum / 8.0
+
+
 @torch.no_grad()
-def _run_inference(model, loader, device, threshold, num_classes: int = 2):
+def _run_inference(model, loader, device, threshold, num_classes: int = 2, tta: bool = False):
     """Run inference. Returns (scores, preds, probs_matrix_or_None).
 
     Binary (num_classes=2):
@@ -74,7 +86,11 @@ def _run_inference(model, loader, device, threshold, num_classes: int = 2):
     is_multi = num_classes >= 3
     all_scores, all_preds, all_probs = [], [], []
     for batch_x, _ in loader:
-        probs = torch.softmax(model(batch_x.to(device)), dim=1).cpu().numpy()
+        batch_x = batch_x.to(device)
+        if tta:
+            probs = _tta_probs(model, batch_x).cpu().numpy()
+        else:
+            probs = torch.softmax(model(batch_x), dim=1).cpu().numpy()
         if is_multi:
             preds = probs.argmax(axis=1)
             top1 = probs.max(axis=1)
@@ -199,19 +215,36 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
         )
     crop_size = getattr(cfg.training, "crop_center_px", None)
 
+    # Apply the same per-channel normalisation as training, if it was enabled.
+    norm_stats = None
+    if getattr(cfg.training, "normalization", "none") == "per_channel":
+        from .dataset import load_norm_stats
+        norm_stats = load_norm_stats(patches_root, cfg._config_stem)
+        if norm_stats is None:
+            raise FileNotFoundError(
+                f"training.normalization=per_channel but no norm stats found at "
+                f"{patches_root}/splits/{cfg._config_stem}_norm_stats.json — "
+                "run training first (build_splits persists them)."
+            )
+        log.info("Loaded per-channel norm stats")
+
     ds = PatchDataset(meta, cands_filtered, patches_root, augment=False,
                       n_spectral_bands=n_spectral, channel_indices=channel_indices,
-                      crop_size=crop_size)
+                      crop_size=crop_size, norm_stats=norm_stats)
     loader = DataLoader(ds, batch_size=cfg.training.batch_size, shuffle=False, num_workers=0)
 
     # Compute effective input_channels
     if channel_subset:
         cfg.model.input_channels = len(channel_subset)
+        cfg.model.in_channel_names = list(channel_subset)
+    else:
+        cfg.model.in_channel_names = list(cfg.patches.bands) + list(cfg.patches.indices)
 
     model = _load_model(cfg, device)
     num_classes = getattr(cfg.model, "num_classes", 2)
     scores_arr, preds_arr, probs_matrix = _run_inference(
         model, loader, device, cfg.inference.threshold, num_classes=num_classes,
+        tta=getattr(cfg.inference, "tta", False),
     )
 
     result = meta[["candidate_id", "lat", "lng"]].copy()

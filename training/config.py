@@ -198,6 +198,12 @@ class PatchConfig(BaseModel):
         default_factory=lambda: ["2023-01-01", "2023-12-31"]
     )
     max_cloud_cover: int = 15
+    # Per-pixel cloud masking applied before compositing. "scl" masks pixels
+    # whose Scene Classification Layer is cloud shadow (3), cloud medium/high
+    # probability (8, 9) or cirrus (10). "none" keeps the legacy behaviour
+    # (scene-level CLOUDY_PIXEL_PERCENTAGE filter only). Changing this changes
+    # the imagery_config_hash, i.e. triggers re-extraction.
+    cloud_mask: Literal["none", "scl"] = "none"
     output_dir: str = "data/patches"
     num_workers: int = 4
     retry_failed: bool = False
@@ -258,6 +264,10 @@ def imagery_config_hash(patch_cfg: PatchConfig) -> str:
         payload["indices"] = patch_cfg.indices
         payload["composite"] = patch_cfg.composite
         payload["max_cloud_cover"] = patch_cfg.max_cloud_cover
+    # Only hash cloud_mask when enabled so pre-existing patch stores
+    # (extracted before the field existed) keep their hashes.
+    if getattr(patch_cfg, "cloud_mask", "none") != "none":
+        payload["cloud_mask"] = patch_cfg.cloud_mask
     payload["date_range"] = patch_cfg.date_range
     canonical = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
@@ -294,6 +304,15 @@ class ModelConfig(BaseModel):
     class_names: Optional[list[str]] = None
     # Optional: hex colors for each class index for the prediction map.
     class_colors: Optional[list[str]] = None
+    # Band order the pretrained checkpoint's first conv expects (torchgeo
+    # weights only), e.g. SSL4EO-S12 13-band order
+    # [B1,B2,B3,B4,B5,B6,B7,B8,B8A,B9,B10,B11,B12]. When set together with
+    # in_channel_names, the first conv is built by SELECTING the matching
+    # pretrained channel slices instead of copying the first k channels.
+    pretrained_band_order: Optional[list[str]] = None
+    # Names of the model's actual input channels in order (set programmatically
+    # by train.py/inference.py from channel_subset or bands+indices).
+    in_channel_names: Optional[list[str]] = None
 
 
 class AugFlipConfig(BaseModel):
@@ -391,6 +410,24 @@ class TrainingConfig(BaseModel):
     mixed_precision: bool = True
     # Class weights [neg, pos] to penalize false positives when model predicts all positive
     class_weight: Optional[list[float]] = None
+    # Loss function. "focal" adds (1-p)^gamma modulation to CE (uses class_weight
+    # as per-class alpha when set). "logit_adjusted" subtracts
+    # tau*log(class_prior) from the logits at train time (Menon et al. 2021) —
+    # a principled alternative to class weights for long-tailed labels.
+    loss: Literal["cross_entropy", "focal", "logit_adjusted"] = "cross_entropy"
+    focal_gamma: float = 2.0
+    logit_adjust_tau: float = 1.0
+    # Metric for best-checkpoint selection + early stopping. "val_loss"
+    # (legacy) minimises weighted CE; "val_f1" maximises macro-F1 — more
+    # robust for imbalanced multi-class runs.
+    checkpoint_metric: Literal["val_loss", "val_f1"] = "val_loss"
+    # Per-channel standardisation. "per_channel" computes mean/std over a
+    # sample of TRAIN patches (after 0-1 scaling, channel subset and crop),
+    # persists them next to the split CSV, and applies (x-mean)/std in the
+    # dataset; inference reads the same stats file. "none" = legacy scaling only.
+    normalization: Literal["none", "per_channel"] = "none"
+    # DataLoader workers for the train loader (0 = main process, legacy).
+    dataloader_workers: int = 0
     # Upsample minority regions so each country contributes equally per epoch
     upsample_minority_regions: bool = False
     balanced_country_splits: bool = False
@@ -413,6 +450,10 @@ class TrainingConfig(BaseModel):
     # Set to False to warm-start from weights only — useful for fine-tuning with
     # different hyperparameters (new LR, new schedule).
     resume_optimizer_state: bool = True
+    # When resuming, restart the epoch counter at 1 instead of prior_epoch+1.
+    # Use for stage-2 recipes (e.g. cRT classifier retraining) where the
+    # checkpoint is a warm start, not a continuation.
+    resume_reset_epoch: bool = False
 
 
 class MLflowConfig(BaseModel):
@@ -481,6 +522,9 @@ class InferenceConfig(BaseModel):
     # ~8x faster; the world map lacks UP/UN points but every metric slice is
     # unchanged. Override on the CLI via `--labeled-only`.
     labeled_only: bool = False
+    # Test-time augmentation: average softmax probabilities over the 8
+    # dihedral transforms (4 rotations x 2 flips). ~8x slower inference.
+    tta: bool = False
 
 
 class VizConfig(BaseModel):

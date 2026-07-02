@@ -96,6 +96,7 @@ class PatchDataset(Dataset):
         n_spectral_bands: int = 6,
         channel_indices: list[int] | None = None,
         crop_size: int | None = None,
+        norm_stats: "tuple[np.ndarray, np.ndarray] | None" = None,
     ):
         self.meta = meta.reset_index(drop=True)
         self.patches_dir = Path(patches_dir)
@@ -105,6 +106,9 @@ class PatchDataset(Dataset):
         self.n_spectral_bands = n_spectral_bands
         self.channel_indices = channel_indices
         self.crop_size = crop_size
+        # (mean, std) arrays over the FINAL channel layout (post channel_subset);
+        # applied as (x - mean) / std after scaling/augment/crop/subset.
+        self.norm_stats = norm_stats
 
         label_map = dict(zip(
             candidates["id"].astype(str),
@@ -148,6 +152,10 @@ class PatchDataset(Dataset):
         # Select channel subset (after scaling + augmentation)
         if self.channel_indices is not None:
             arr = arr[self.channel_indices].copy()
+
+        if self.norm_stats is not None:
+            mean, std = self.norm_stats
+            arr = (arr - mean[:, None, None]) / std[:, None, None]
 
         tensor = torch.from_numpy(arr)
         label = int(self.labels[idx])
@@ -402,37 +410,55 @@ def _region_split_indices(
 # Random stratified splitting (original behaviour)
 # ---------------------------------------------------------------------------
 
+def _stratified_class_split(
+    labels: np.ndarray,
+    test_frac: float,
+    val_frac: float,
+    rng: np.random.Generator,
+) -> tuple[list[int], list[int], list[int]]:
+    """Split positions 0..len(labels)-1 into train/val/test stratified by class.
+
+    Works for ANY number of classes (the previous pos/neg-only logic silently
+    dropped every label >= 2 — e.g. all OtherFarm rows in three_class runs).
+    Rows with label < 0 are excluded entirely (unlabeled).
+    """
+    train: list[int] = []
+    val: list[int] = []
+    test: list[int] = []
+    for cls in np.unique(labels):
+        if cls < 0:
+            continue
+        cls_idx = np.flatnonzero(labels == cls).tolist()
+        rng.shuffle(cls_idx)
+        n = len(cls_idx)
+        n_te = int(n * test_frac)
+        n_va = int(n * val_frac)
+        test.extend(cls_idx[:n_te])
+        val.extend(cls_idx[n_te:n_te + n_va])
+        train.extend(cls_idx[n_te + n_va:])
+    rng.shuffle(train)
+    rng.shuffle(val)
+    rng.shuffle(test)
+    return train, val, test
+
+
 def _random_split_indices(
     meta: pd.DataFrame,
     cfg: PipelineConfig,
     rng: np.random.Generator,
     label_col: str = "_label",
 ) -> tuple[list[int], list[int], list[int]]:
-    pos_idx = meta.index[meta[label_col] == 1].tolist()
-    neg_idx = meta.index[meta[label_col] == 0].tolist()
-    rng.shuffle(pos_idx)
-    rng.shuffle(neg_idx)
-
-    def _split(indices: list[int]) -> tuple[list, list, list]:
-        n = len(indices)
-        n_test = max(1, int(n * cfg.training.test_split))
-        n_val = max(1, int(n * cfg.training.val_split))
-        return (
-            indices[n_test + n_val:],
-            indices[n_test: n_test + n_val],
-            indices[:n_test],
-        )
-
-    pt, pv, pe = _split(pos_idx)
-    nt, nv, ne = _split(neg_idx)
-
-    train_idx = pt + nt
-    val_idx = pv + nv
-    test_idx = pe + ne
-    rng.shuffle(train_idx)
-    rng.shuffle(val_idx)
-    rng.shuffle(test_idx)
-    return train_idx, val_idx, test_idx
+    """Class-stratified random split. Returns lists of meta index labels."""
+    index_labels = meta.index.to_numpy()
+    labels = meta[label_col].to_numpy()
+    tr, va, te = _stratified_class_split(
+        labels, cfg.training.test_split, cfg.training.val_split, rng,
+    )
+    return (
+        index_labels[tr].tolist(),
+        index_labels[va].tolist(),
+        index_labels[te].tolist(),
+    )
 
 
 def _country_balanced_split_indices(
@@ -719,21 +745,10 @@ def build_splits(
             test_idx = [remaining_idx[i] for i in te_local]
         else:
             remaining_meta = meta.iloc[remaining_idx].reset_index(drop=True)
-            remaining_labels = remaining_meta["_label"].values
-            pos_idx = [i for i, l in enumerate(remaining_labels) if l == 1]
-            neg_idx = [i for i, l in enumerate(remaining_labels) if l == 0]
-            rng.shuffle(pos_idx)
-            rng.shuffle(neg_idx)
-            n_pte = int(len(pos_idx) * cfg.training.test_split)
-            n_nte = int(len(neg_idx) * cfg.training.test_split)
-            n_pv = int(len(pos_idx) * cfg.training.val_split)
-            n_nv = int(len(neg_idx) * cfg.training.val_split)
-            test_local = pos_idx[:n_pte] + neg_idx[:n_nte]
-            val_local = pos_idx[n_pte:n_pte + n_pv] + neg_idx[n_nte:n_nte + n_nv]
-            train_local = pos_idx[n_pte + n_pv:] + neg_idx[n_nte + n_nv:]
-            rng.shuffle(test_local)
-            rng.shuffle(val_local)
-            rng.shuffle(train_local)
+            remaining_labels = remaining_meta["_label"].to_numpy()
+            train_local, val_local, test_local = _stratified_class_split(
+                remaining_labels, cfg.training.test_split, cfg.training.val_split, rng,
+            )
             train_idx = [remaining_idx[i] for i in train_local]
             val_idx = [remaining_idx[i] for i in val_local]
             test_idx = [remaining_idx[i] for i in test_local]
@@ -810,6 +825,25 @@ def build_splits(
         len(gen_idx),
         meta["_label"].mean(),
     )
+    # Per-class composition of every labelled split. A class with 0 train
+    # rows is unlearnable — fail loudly instead of silently training without it.
+    all_classes = sorted(int(c) for c in meta.loc[meta["_label"] >= 0, "_label"].unique())
+    for split_name, idx_list in [
+        ("train", train_idx), ("val", val_idx), ("test", test_idx),
+        ("inspected", inspected_idx), ("eval", eval_idx), ("generalization", gen_idx),
+    ]:
+        if not idx_list:
+            continue
+        counts = meta.loc[idx_list, "_label"].value_counts().to_dict()
+        log.info("  %s class counts: %s", split_name,
+                 {c: int(counts.get(c, 0)) for c in all_classes})
+    missing_train = [c for c in all_classes if int((meta.loc[train_idx, "_label"] == c).sum()) == 0]
+    if missing_train:
+        raise ValueError(
+            f"Classes {missing_train} have ZERO rows in the train split — "
+            "the model could never learn them. Check split configuration "
+            "(this guards against the v6/v7 OtherFarm-drop bug)."
+        )
 
     # Persist split assignments so we can colour the map later
     split_col = pd.Series("unassigned", index=meta_clean.index)
@@ -875,6 +909,24 @@ def build_splits(
     # When both are enabled, weights multiply: each sample's draw probability
     # is proportional to (1/n_country) * (1/n_class), giving roughly equal
     # representation across both axes per epoch.
+    # Per-channel standardisation: stats from TRAIN patches only (no
+    # augmentation), persisted beside the split CSV so inference applies
+    # the identical transform.
+    if getattr(cfg.training, "normalization", "none") == "per_channel":
+        mean, std = _compute_norm_stats(train_ds)
+        stats_path = splits_dir / f"{cfg._config_stem}_norm_stats.json"
+        import json as _json
+        stats_path.write_text(_json.dumps(
+            {"mean": mean.tolist(), "std": std.tolist(),
+             "channel_subset": channel_subset or (list(cfg.patches.bands) + list(cfg.patches.indices))},
+            indent=2,
+        ))
+        log.info("Per-channel norm stats (n_train sample): mean=%s std=%s -> %s",
+                 np.round(mean, 4).tolist(), np.round(std, 4).tolist(), stats_path)
+        for ds in (train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds):
+            if ds is not None:
+                ds.norm_stats = (mean, std)
+
     region_w = None
     class_w = None
     if cfg.training.upsample_minority_regions:
@@ -893,6 +945,57 @@ def build_splits(
         train_ds.sample_weights = class_w
 
     return train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds
+
+
+def _compute_norm_stats(
+    ds: PatchDataset, max_samples: int = 512,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-channel mean/std over a random sample of *ds* items (augmentation off).
+
+    Stats are computed on the FINAL channel layout (post scaling / crop /
+    channel_subset), so they can be applied verbatim at inference time.
+    """
+    saved_augment = ds.augment
+    ds.augment = False
+    try:
+        rng = np.random.default_rng(0)
+        n = len(ds)
+        idx = rng.choice(n, size=min(max_samples, n), replace=False)
+        acc_sum = None
+        acc_sq = None
+        count = 0
+        for i in idx:
+            x, _ = ds[int(i)]
+            a = x.numpy().astype(np.float64)
+            c = a.shape[0]
+            flat = a.reshape(c, -1)
+            if acc_sum is None:
+                acc_sum = flat.sum(axis=1)
+                acc_sq = (flat ** 2).sum(axis=1)
+            else:
+                acc_sum += flat.sum(axis=1)
+                acc_sq += (flat ** 2).sum(axis=1)
+            count += flat.shape[1]
+        mean = acc_sum / count
+        var = acc_sq / count - mean ** 2
+        std = np.sqrt(np.maximum(var, 1e-12))
+        std = np.maximum(std, 1e-6)  # guard against constant channels
+        return mean.astype(np.float32), std.astype(np.float32)
+    finally:
+        ds.augment = saved_augment
+
+
+def load_norm_stats(patches_root: Path, config_stem: str) -> "tuple[np.ndarray, np.ndarray] | None":
+    """Load persisted per-channel norm stats for *config_stem*, or None."""
+    import json as _json
+    stats_path = Path(patches_root) / "splits" / f"{config_stem}_norm_stats.json"
+    if not stats_path.exists():
+        return None
+    payload = _json.loads(stats_path.read_text())
+    return (
+        np.asarray(payload["mean"], dtype=np.float32),
+        np.asarray(payload["std"], dtype=np.float32),
+    )
 
 
 def _compute_class_weights(

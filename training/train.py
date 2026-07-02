@@ -52,21 +52,27 @@ def _compute_metrics(
         }
     from sklearn.metrics import (
         accuracy_score, precision_recall_fscore_support, f1_score,
+        confusion_matrix,
     )
     acc = accuracy_score(labels, preds)
     p_macro, r_macro, f1_macro, _ = precision_recall_fscore_support(
         labels, preds, average="macro", zero_division=0,
     )
+    # Fixed class range 0..max so f1_class{i} always refers to class i, even
+    # when a class is absent from this slice (it then scores 0, not shifted).
+    class_ids = list(range(int(max(labels.max(), preds.max())) + 1))
     per_class_f1 = f1_score(labels, preds, average=None, zero_division=0,
-                            labels=sorted(set(int(x) for x in np.unique(np.concatenate([labels, preds])))))
+                            labels=class_ids)
     out = {
         "accuracy": round(float(acc), 4),
         "precision": round(float(p_macro), 4),
         "recall": round(float(r_macro), 4),
         "f1": round(float(f1_macro), 4),
     }
-    for i, v in enumerate(per_class_f1):
+    for i, v in zip(class_ids, per_class_f1):
         out[f"f1_class{i}"] = round(float(v), 4)
+    # rows = true class, cols = predicted class
+    out["confusion_matrix"] = confusion_matrix(labels, preds, labels=class_ids).tolist()
     return out
 
 
@@ -128,6 +134,17 @@ def _write_per_country_metrics(eval_ds, model, criterion, device, bs, out_path, 
         out[country] = metrics
         log.info("Eval per country %s (n=%d): %s", country, len(idx), metrics)
     out_path.write_text(json.dumps(out, indent=2))
+
+
+def _dataset_worker_init(worker_id: int) -> None:
+    """Re-seed each DataLoader worker's numpy RNG.
+
+    Without this every forked worker inherits an identical copy of the
+    dataset's ``rng``, so augmentations repeat across workers.
+    """
+    info = torch.utils.data.get_worker_info()
+    if info is not None and hasattr(info.dataset, "rng"):
+        info.dataset.rng = np.random.default_rng(info.seed)
 
 
 def _make_optimizer(model, cfg: PipelineConfig, lr_scale: float = 1.0):
@@ -287,6 +304,9 @@ def _run_epoch_loop(
     optimizer = _make_optimizer(ctx.model, ctx.cfg)
     scheduler = _build_scheduler(optimizer, ctx.cfg)
     best_val_loss, patience = float("inf"), 0
+    # Checkpoint selection: "val_loss" (minimise) or "val_f1" (maximise macro-F1).
+    ckpt_metric = getattr(ctx.cfg.training, "checkpoint_metric", "val_loss")
+    best_val_f1 = -1.0
     start_epoch = 1
     last_ckpt_path = ctx.best_path.with_name("last_ckpt.pt")
 
@@ -313,21 +333,26 @@ def _run_epoch_loop(
                     ctx.scaler.load_state_dict(sca_sd)
                 except (ValueError, KeyError) as e:
                     log.warning("Could not restore scaler state (%s)", e)
-        prior_epoch = int(resumed_state.get("epoch", 0))
-        start_epoch = prior_epoch + 1
-        best_val_loss = float(resumed_state.get("best_val_loss", float("inf")))
-        log.info(
-            "Resuming at epoch %d (prior best_val_loss=%.4f)",
-            start_epoch, best_val_loss,
-        )
+        if ctx.cfg.training.resume_reset_epoch:
+            start_epoch = 1
+            log.info("Resume with reset epoch counter (stage-2 warm start)")
+        else:
+            prior_epoch = int(resumed_state.get("epoch", 0))
+            start_epoch = prior_epoch + 1
+            best_val_loss = float(resumed_state.get("best_val_loss", float("inf")))
+            log.info(
+                "Resuming at epoch %d (prior best_val_loss=%.4f)",
+                start_epoch, best_val_loss,
+            )
 
     for epoch in range(start_epoch, ctx.cfg.training.epochs + 1):
-        # Unfreeze + LR drop transition (skip when resuming past this point —
-        # both the model state and the optimizer should already reflect it).
+        # Unfreeze + LR drop transition. Also runs when a resumed run reaches
+        # the transition epoch (previously skipped for ANY resume, leaving the
+        # backbone frozen forever when resuming from before the unfreeze point).
         if (
             ctx.cfg.model.freeze_backbone_epochs > 0
             and epoch == ctx.cfg.model.freeze_backbone_epochs + 1
-            and resumed_state is None
+            and start_epoch <= ctx.cfg.model.freeze_backbone_epochs + 1
         ):
             ctx.model.unfreeze_backbone()
             optimizer = _make_optimizer(ctx.model, ctx.cfg, lr_scale=0.1)
@@ -337,21 +362,34 @@ def _run_epoch_loop(
         v_loss, vm = _evaluate(ctx.model, val_loader, ctx.criterion, ctx.device)
         _step_scheduler(scheduler, ctx.cfg, v_loss)
 
-        mlflow.log_metrics({
+        epoch_metrics = {
             "train_loss": t_loss, "val_loss": v_loss,
             "val_f1": vm["f1"], "val_precision": vm["precision"],
             "val_recall": vm["recall"], "val_accuracy": vm["accuracy"],
             "lr": optimizer.param_groups[0]["lr"],
-        }, step=epoch)
+        }
+        # Per-class F1 (multi-class runs) so minority-class collapse is
+        # visible during training, not only post-hoc.
+        for k, v in vm.items():
+            if k.startswith("f1_class"):
+                epoch_metrics[f"val_{k}"] = v
+        mlflow.log_metrics(epoch_metrics, step=epoch)
         log.info(
-            "Epoch %d/%d  loss=%.4f  val=%.4f  f1=%.4f  prec=%.4f  rec=%.4f",
+            "Epoch %d/%d  loss=%.4f  val=%.4f  f1=%.4f  prec=%.4f  rec=%.4f  %s",
             epoch, ctx.cfg.training.epochs, t_loss, v_loss,
             vm["f1"], vm["precision"], vm["recall"],
+            " ".join(f"{k}={v:.3f}" for k, v in vm.items() if k.startswith("f1_class")),
         )
 
         # Save best as a full-state checkpoint so the run can be resumed.
-        if v_loss < best_val_loss:
-            best_val_loss, patience = v_loss, 0
+        if ckpt_metric == "val_f1":
+            improved = vm["f1"] > best_val_f1
+        else:
+            improved = v_loss < best_val_loss
+        if improved:
+            best_val_f1 = max(best_val_f1, vm["f1"])
+            best_val_loss = min(best_val_loss, v_loss)
+            patience = 0
             save_checkpoint(ctx.best_path, ctx.model, optimizer, scheduler,
                             ctx.scaler, epoch, best_val_loss)
         else:
@@ -408,7 +446,11 @@ def train(cfg: PipelineConfig) -> Path:
             getattr(cfg.training, "balanced_class_sampling", False),
         )
 
-    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=train_shuffle, sampler=train_sampler, num_workers=0)
+    n_workers = getattr(cfg.training, "dataloader_workers", 0)
+    worker_init = _dataset_worker_init if n_workers > 0 else None
+    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=train_shuffle, sampler=train_sampler,
+                              num_workers=n_workers, worker_init_fn=worker_init,
+                              persistent_workers=n_workers > 0)
     val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=bs, shuffle=False, num_workers=0)
     inspected_loader = DataLoader(inspected_ds, batch_size=bs, shuffle=False, num_workers=0) if inspected_ds else None
@@ -419,7 +461,10 @@ def train(cfg: PipelineConfig) -> Path:
         from .config import resolve_channel_indices
         _, n_spectral = resolve_channel_indices(channel_subset, cfg.patches.bands, cfg.patches.indices)
         cfg.model.input_channels = len(channel_subset)
+        cfg.model.in_channel_names = list(channel_subset)
         log.info("Channel subset: %s -> input_channels=%d", channel_subset, cfg.model.input_channels)
+    else:
+        cfg.model.in_channel_names = list(cfg.patches.bands) + list(cfg.patches.indices)
 
     model = build_model(cfg.model).to(device)
 
@@ -438,6 +483,8 @@ def train(cfg: PipelineConfig) -> Path:
         resumed_state = load_checkpoint(resume_path, device)
         model.load_state_dict(resumed_state["model_state_dict"])
         prior_epoch = int(resumed_state.get("epoch", 0))
+        if getattr(cfg.training, "resume_reset_epoch", False):
+            prior_epoch = 0  # stage-2 warm start: freeze rules apply afresh
         log.info(
             "Loaded weights (prior epoch=%d, optimizer state %s)",
             prior_epoch,
@@ -451,10 +498,10 @@ def train(cfg: PipelineConfig) -> Path:
     ):
         model.freeze_backbone()
 
-    weights = None
-    if cfg.training.class_weight is not None and len(cfg.training.class_weight) >= 2:
-        weights = torch.tensor(cfg.training.class_weight, dtype=torch.float32).to(device)
-    criterion = nn.CrossEntropyLoss(weight=weights)
+    from .losses import build_criterion
+    criterion = build_criterion(cfg, train_labels=train_ds.labels, device=device)
+    log.info("Criterion: %s (class_weight=%s)",
+             type(criterion).__name__, cfg.training.class_weight)
     use_amp = cfg.training.mixed_precision and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda") if use_amp else None
 

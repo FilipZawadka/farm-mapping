@@ -137,3 +137,14 @@ Recent Δ history:
 | v5 | strict `training_countries` whitelist + `dmv_force_to_train_only` | Adherence to Rachel's framework |
 | v6 | all sampler balancing OFF | Fix v5's Poultry ↔ OtherFarm confusion |
 | v7 | v6 + light class weight `[1, 0.7, 2.0]` | Try to rescue OtherFarm (failed — weight too light) |
+| v8 | v6 recipe + split bugfix + val-F1 selection + per-channel norm | See below — v6/v7 results are INVALID |
+
+> **⚠ v6/v7 correction (2026-07-02).** The old split code stratified by
+> `label==1`/`label==0` only, so with `balanced_country_splits: false`
+> (v6/v7) every OtherFarm (`label==2`) row was silently dropped from
+> train/val/test. The model never saw one OtherFarm example — F1_class2=0
+> was inevitable, and v7's class weight had nothing to act on. Both runs'
+> conclusions about "natural distribution" are void. Fixed in
+> `training/dataset.py` (`_stratified_class_split`); `build_splits` now
+> hard-fails when any class has zero train rows. See
+> [docs/EXPERIMENTS_v8.md](../EXPERIMENTS_v8.md).

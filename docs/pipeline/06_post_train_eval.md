@@ -86,9 +86,11 @@ Each `*_metrics.json` file:
 
 Metrics are computed by `_compute_metrics` in
 [training/train.py](../../training/train.py) using
-`sklearn.metrics.precision_recall_fscore_support(average="weighted")` for
-overall + per-class F1. `loss` is the average CrossEntropyLoss over the
-slice.
+`sklearn.metrics.precision_recall_fscore_support(average="macro")` for
+overall + per-class F1 (fixed class range 0..max, so `f1_classN` always
+refers to class N even when a class is absent from the slice). Each JSON
+also carries a `confusion_matrix` (rows = true, cols = predicted). `loss`
+is the average criterion loss over the slice.
 
 ## Per-country breakdown
 

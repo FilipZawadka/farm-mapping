@@ -37,6 +37,7 @@ def resolve_imagery_sources(patch_cfg: "PatchConfig") -> list[ResolvedSource]:
         indices=patch_cfg.indices,
         max_cloud_cover=patch_cfg.max_cloud_cover,
         composite=patch_cfg.composite,
+        cloud_mask=getattr(patch_cfg, "cloud_mask", "none"),
     )
     return [ResolvedSource(provider)]
 

@@ -187,20 +187,62 @@ def build_generic(cfg: ModelConfig) -> FarmDetector:
     return _build_from_hub(cfg)
 
 
+def _adapt_first_conv_mapped(
+    conv: nn.Conv2d,
+    in_channel_names: list[str],
+    pretrained_band_order: list[str],
+) -> nn.Conv2d:
+    """Build a first conv whose input channels SELECT the matching pretrained
+    band slices by name (instead of blindly copying the first k channels,
+    which misaligns e.g. our [B2,B3,B4,NDWI] against SSL4EO's [B1,B2,...]).
+
+    Channels without a pretrained counterpart (spectral indices like NDWI)
+    are initialised from the mean of all pretrained band weights.
+    """
+    old_weight = conv.weight.data  # (out_c, pre_c, kh, kw)
+    out_c, _, kh, kw = old_weight.shape
+    new_conv = nn.Conv2d(
+        len(in_channel_names), out_c, kernel_size=(kh, kw),
+        stride=conv.stride, padding=conv.padding,
+        dilation=conv.dilation, groups=conv.groups, bias=conv.bias is not None,
+    )
+    with torch.no_grad():
+        mean_weight = old_weight.mean(dim=1)
+        for i, name in enumerate(in_channel_names):
+            if name in pretrained_band_order:
+                src = pretrained_band_order.index(name)
+                new_conv.weight[:, i] = old_weight[:, src]
+            else:
+                new_conv.weight[:, i] = mean_weight
+                log.info("Channel %r not in pretrained bands — mean-init", name)
+        if conv.bias is not None and new_conv.bias is not None:
+            new_conv.bias.copy_(conv.bias)
+    return new_conv
+
+
 def build_torchgeo_resnet(cfg: ModelConfig) -> FarmDetector:
     """Load a ResNet50 with torchgeo pretrained weights (e.g. Satlas, SSL4EO)."""
     import torchgeo.models
-    import torchvision.models as tv_models
 
-    weights_name = cfg.hub_name  # e.g. "SENTINEL2_SI_MS_SATLAS"
+    weights_name = cfg.hub_name  # e.g. "SENTINEL2_ALL_MOCO"
     weights_enum = getattr(torchgeo.models.ResNet50_Weights, weights_name)
     backbone = torchgeo.models.resnet50(weights=weights_enum)
 
     # torchgeo returns a torchvision ResNet — adapt channels if needed
     pretrained_channels = backbone.conv1.in_channels
     if cfg.input_channels != pretrained_channels:
-        _adapt_first_conv(backbone, cfg.input_channels)
-        log.info("Adapted first conv: %d -> %d input channels", pretrained_channels, cfg.input_channels)
+        if cfg.pretrained_band_order and cfg.in_channel_names:
+            backbone.conv1 = _adapt_first_conv_mapped(
+                backbone.conv1, cfg.in_channel_names, cfg.pretrained_band_order,
+            )
+            log.info(
+                "Band-mapped first conv: %s -> pretrained %d-band order",
+                cfg.in_channel_names, pretrained_channels,
+            )
+        else:
+            _adapt_first_conv(backbone, cfg.input_channels)
+            log.info("Adapted first conv: %d -> %d input channels (positional copy)",
+                     pretrained_channels, cfg.input_channels)
 
     backbone.fc = nn.Linear(backbone.fc.in_features, cfg.num_classes)
 

@@ -1,0 +1,132 @@
+# ============================================================================
+# world_v8_ssl4eo -- v8 recipe + Sentinel-2-native pretrained backbone.
+#
+# Swaps the ImageNet ResNet-50 for torchgeo's SSL4EO-S12 MoCo ResNet-50
+# (SENTINEL2_ALL_MOCO): self-supervised on 250k Sentinel-2 locations x 4
+# seasons. Verified third-party evidence (isaaccorley/resize-is-all-you-need):
+# EuroSAT 64x64 KNN 94.1% vs 65.6% for ImageNet -- the gap is largest exactly
+# in our regime (small S2 patches, limited labels).
+#
+# Notes:
+#   - pretrained_band_order maps our channels onto SSL4EO's 13-band L1C
+#     order by NAME (the old code copied the first k channels, which would
+#     misalign B2,B3,B4 against B1,B2,B3). NDVI/NDBI/NDWI get mean-init.
+#   - Uses ALL 9 channels (channel_subset null): SSL4EO pretrained weights
+#     for B8/B11/B12 come along for free; the RGB+NDWI-only ablation was
+#     measured with ImageNet init and deserves re-testing here.
+#   - normalization stays "none": SSL4EO pretrained on /10000-scaled
+#     reflectance, which is exactly our legacy scaling. Do NOT z-score.
+# ============================================================================
+run_name: "world_v8_ssl4eo"
+
+data:
+  candidates_dir: data/rachel_geometry_candidates/candidates_world_v8_three_class
+  parquet_source: data/rachel_geometry_candidates/all_countries/all_clusters_v4.parquet
+  inspected_as_test: true
+  include_unlabeled: true
+  label_mode: three_class
+  training_countries: [USA, BRA, CHL, MEX, THA]
+  generalization_countries: [BGD, NGA]
+  dmv_force_to_train_only: true
+
+patches:
+  patch_size_px: 128
+  resolution_m: 10
+  bands: [B2, B3, B4, B8, B11, B12]
+  indices: [NDVI, NDBI, NDWI]
+  composite: median
+  date_range: ["2023-01-01", "2023-12-31"]
+  max_cloud_cover: 15
+  output_dir: data/patches
+  num_workers: 16
+
+model:
+  architecture: resnet50_ssl4eo
+  hub_name: SENTINEL2_ALL_MOCO
+  pretrained_band_order: [B1, B2, B3, B4, B5, B6, B7, B8, B8A, B9, B10, B11, B12]
+  pretrained: true
+  num_classes: 3
+  input_channels: 9
+  freeze_backbone_epochs: 5
+  class_names: [NotFarm, Poultry, OtherFarm]
+  class_colors: ["#95a5a6", "#e74c3c", "#3498db"]
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 10
+  checkpoint_metric: val_f1
+  normalization: none  # SSL4EO expects raw /10000 scaling
+  dataloader_workers: 8
+  val_split: 0.15
+  test_split: 0.15
+  seed: 42
+  mixed_precision: true
+  upsample_minority_regions: false
+  balanced_country_splits: false
+  balanced_class_sampling: false
+  class_weight: null
+  channel_subset: null
+  crop_center_px: 64
+  augmentation:
+    enabled: true
+    horizontal_flip: { enabled: true, probability: 0.5 }
+    vertical_flip: { enabled: true, probability: 0.5 }
+    random_rotation_90: { enabled: true, probability: 0.75 }
+    continuous_rotation: { enabled: true, probability: 0.3, max_degrees: 15 }
+    random_resized_crop: { enabled: true, probability: 0.3, scale_min: 0.8, scale_max: 1.0 }
+    brightness_jitter: { enabled: true, probability: 0.5, range_min: 0.85, range_max: 1.15 }
+    per_band_jitter: { enabled: true, probability: 0.3, range_min: 0.95, range_max: 1.05 }
+    gaussian_noise: { enabled: true, probability: 0.3, sigma: 0.02 }
+    channel_dropout: { enabled: true, probability: 0.1, max_channels: 1 }
+    cutout: { enabled: false }
+    recompute_indices: false
+
+mlflow:
+  tracking_uri: ./mlruns
+  experiment_name: world_v8_ssl4eo
+  log_model: true
+
+runpod:
+  gpu_type: "NVIDIA A40"
+  gpu_fallbacks:
+    - "NVIDIA L4"
+    - "NVIDIA L40"
+    - "NVIDIA L40S"
+    - "NVIDIA RTX A5000"
+    - "NVIDIA RTX A6000"
+    - "NVIDIA RTX 6000 Ada Generation"
+    - "NVIDIA GeForce RTX 4090"
+  cloud_type: "SECURE"
+  docker_image: runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+  volume_mount: /workspace
+  code_dir: /workspace/farm-mapping
+  github_repo: https://github.com/FilipZawadka/farm-mapping.git
+  github_branch: main
+  api_key_env: RUNPOD_API_KEY
+  network_volume_id: r8nyom4e4e
+  cpu_instance_id: "cpu3g-8-32"
+  cpu_fallbacks:
+    - "cpu3g-4-16"
+    - "cpu3c-8-16"
+    - "cpu3m-4-32"
+  auto_terminate: true
+
+inference:
+  checkpoint: data/output/world_v8_ssl4eo/best_model.pt
+  threshold: 0.5
+  labeled_only: true
+  confidence_tiers:
+    high: 0.9
+    medium: 0.7
+    low: 0.4
+
+visualization:
+  output_dir: output/maps_world_v8_ssl4eo
+  show_true_positives: true
+  show_false_positives: true
+  show_false_negatives: true
+  show_true_negatives: true

@@ -281,8 +281,8 @@ Each three-class value is `(NotFarm / Poultry / OtherFarm)`.
 |---|---|---|---|---|---|---|
 | **v8_three_class** | 0.626 | 0.619 / 0.812 / 0.448 | 0.403 | 0.444 / 0.747 / 0.018 | 0.397 | 0.360 / 0.831 / 0.000 |
 | **v8_logitadj**    | 0.572 | 0.589 / 0.709 / 0.418 | 0.470 | 0.549 / 0.596 / 0.265 | 0.330 | 0.417 / 0.574 / 0.000 |
-| **v8_ssl4eo**      | **0.723** | 0.711 / 0.842 / **0.617** | **0.489** | 0.475 / 0.724 / 0.269 | **0.407** | 0.427 / 0.793 / 0.000 |
-| **v8_crt** *(in flight)* | — | — | — | — | — | — |
+| **v8_ssl4eo**      | 0.723 | 0.711 / 0.842 / **0.617** | 0.489 | 0.475 / 0.724 / 0.269 | 0.407 | 0.427 / 0.793 / 0.000 |
+| **v8_crt**         | **0.727** | 0.733 / 0.842 / 0.606 | **0.494** | 0.495 / 0.723 / 0.264 | **0.426** | 0.457 / 0.820 / 0.000 |
 | **v8_cloudfree** *(blocked: disk quota exceeded mid-extraction)* | — | — | — | — | — | — |
 
 ### Post-hoc experiments (2026-07-03)
@@ -343,6 +343,10 @@ critical path.
   three_class), eval 0.489 (+0.09), gen 0.407 (+0.01), test OtherFarm F1
   0.617 (+0.17). *S2-native pretraining is the single biggest lever* —
   the research prediction held.
+- **cRT gives a small OOD lift** (gen macroF1 0.407 → **0.426**) but no
+  eval OtherFarm rescue (0.269 → 0.264). Overall the winner overall, but
+  only marginally — the ssl4eo backbone was already carrying almost all
+  the signal.
 - **v8_three_class's eval f1_class2 = 0.018 is the puzzle**. Test f1_c2 =
   0.448 says the model *can* learn OtherFarm. Eval f1_c2 = 0.018 says on
   Rachel's representative slice it barely predicts OtherFarm at all.

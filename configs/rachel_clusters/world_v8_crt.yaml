@@ -36,11 +36,13 @@ patches:
   num_workers: 16
 
 model:
-  architecture: resnet50
-  hub_name: microsoft/resnet-50
+  # Must match world_v8_ssl4eo (that's the backbone we're resuming from).
+  architecture: resnet50_ssl4eo
+  hub_name: SENTINEL2_ALL_MOCO
+  pretrained_band_order: [B1, B2, B3, B4, B5, B6, B7, B8, B8A, B9, B10, B11, B12]
   pretrained: true
   num_classes: 3
-  input_channels: 4
+  input_channels: 9
   freeze_backbone_epochs: 999  # head-only for the whole run
   class_names: [NotFarm, Poultry, OtherFarm]
   class_colors: ["#95a5a6", "#e74c3c", "#3498db"]
@@ -53,7 +55,7 @@ training:
   scheduler: cosine
   early_stopping_patience: 5
   checkpoint_metric: val_f1
-  normalization: per_channel
+  normalization: none  # match ssl4eo (SSL4EO expects raw /10000 scaling)
   dataloader_workers: 8
   val_split: 0.15
   test_split: 0.15
@@ -63,10 +65,10 @@ training:
   balanced_country_splits: false
   balanced_class_sampling: true
   class_weight: null
-  resume_from: data/output/world_v8_three_class/best_model.pt
+  resume_from: data/output/world_v8_ssl4eo/best_model.pt
   resume_optimizer_state: false
   resume_reset_epoch: true
-  channel_subset: [B2, B3, B4, NDWI]
+  channel_subset: null  # match ssl4eo (all 9 channels)
   crop_center_px: 64
   augmentation:
     enabled: true

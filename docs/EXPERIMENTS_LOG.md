@@ -303,8 +303,37 @@ well-calibrated. This means **the ceiling in v8_three_class is the
 feature representation itself**, not the classifier — consistent with
 Menon et al.'s "features first, decision second" framing.
 
-**#6 adabn_adapt on ssl4eo** — pending pod completion; results will land in
-[`data/output/world_v8_ssl4eo/adabn_report.json`](../data/output/world_v8_ssl4eo/).
+**#6 adabn_adapt on ssl4eo** (report:
+[`data/output/world_v8_ssl4eo/adabn_report.json`](../data/output/world_v8_ssl4eo/)):
+
+| Slice | Before AdaBN | After AdaBN | Δ |
+|---|---|---|---|
+| generalization macroF1 | 0.407 | 0.383 | **−0.024** |
+| generalization f1_class0 | 0.427 | 0.364 | −0.063 |
+| generalization f1_class1 | 0.793 | 0.787 | −0.006 |
+| generalization f1_class2 | 0.000 | 0.000 | 0 (mechanical) |
+| training-country test macroF1 | 0.723 | 0.690 | −0.033 |
+| training-country test f1_class2 | 0.617 | 0.612 | −0.005 |
+
+**Negative result — but diagnostic.** AdaBN re-estimates BatchNorm
+running stats on BGD/NGA target patches; the theory is that BN stats ARE
+the source-domain radiometry. If the OOD gap were radiometric, AdaBN
+would lift generalization macroF1 by several points. Here it moved
+**backward** on both target (generalization) and source (test) —
+indicating:
+
+- Source BN stats already fit target radiometry well (SSL4EO's
+  self-supervised pretraining on 250k S2 sites likely already saw
+  BGD/NGA-like scenes).
+- Real OOD gap is **morphological / label-distribution shift**, not
+  spectral: building footprints, cluster sizes, and OtherFarm-vs-Poultry
+  frequencies in BGD/NGA differ, and pixel statistics don't capture that.
+
+The natural next lever for OOD is either (a) 50–200 labelled BGD/NGA
+clusters (biggest evidence-backed lift for OOD in the literature),
+(b) footprint-geometry fusion (see EXPERIMENTS_v8.md §4), or (c) MixStyle
++ heavier photometric augmentation on the source. AdaBN is off the
+critical path.
 
 ### Key readings
 

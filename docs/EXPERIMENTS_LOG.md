@@ -33,12 +33,13 @@ onwards). Both use the label routing enforced by
 [`build_splits`](../training/dataset.py) — see
 [`pipeline/04_splits.md`](pipeline/04_splits.md).
 
-> **Why every `gen f1_class2` is 0.000**: BGD and NGA's labelled clusters
-> are **entirely poultry** (no pigs, no cattle). With TP + FN = 0 for
-> class 2 on that slice, sklearn returns 0 by convention regardless of
-> model quality. This is mechanical, not diagnostic — a perfect v8 model
-> will still read 0 there until Rachel's BGD/NGA labels include an
-> OtherFarm sample.
+> **Why every `gen f1_class2` is 0.000**: BGD + NGA have only **4
+> labelled OtherFarm rows** in total (58 NotFarm, 211 Poultry, 4
+> OtherFarm — from the v8_ssl4eo `build_splits` log). With 4 positives,
+> a model with even moderate OtherFarm precision on the training set
+> still has ~90% probability of scoring 0/4 recall by chance — every
+> v4-onwards run confirms this. Not diagnostic of model quality; needs
+> more BGD/NGA OtherFarm labels to become a useful signal.
 
 ---
 

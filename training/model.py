@@ -225,7 +225,14 @@ def build_torchgeo_resnet(cfg: ModelConfig) -> FarmDetector:
     import torchgeo.models
 
     weights_name = cfg.hub_name  # e.g. "SENTINEL2_ALL_MOCO"
-    weights_enum = getattr(torchgeo.models.ResNet50_Weights, weights_name)
+    weights_enum = getattr(torchgeo.models.ResNet50_Weights, weights_name, None)
+    if weights_enum is None:
+        available = [w for w in dir(torchgeo.models.ResNet50_Weights) if w.isupper()]
+        raise RuntimeError(
+            f"torchgeo {getattr(torchgeo, '__version__', '?')} has no "
+            f"ResNet50_Weights.{weights_name!r} — SENTINEL2_ALL_SOFTCON requires "
+            f"torchgeo>=0.7.0 (upgrade /workspace/farm-venv). Available: {available}"
+        )
     backbone = torchgeo.models.resnet50(weights=weights_enum)
 
     # torchgeo returns a torchvision ResNet — adapt channels if needed
@@ -253,6 +260,7 @@ MODEL_BUILDERS: dict[str, callable] = {
     "resnet50": build_resnet,
     "resnet50_satlas": build_torchgeo_resnet,
     "resnet50_ssl4eo": build_torchgeo_resnet,
+    "resnet50_softcon": build_torchgeo_resnet,
     "vit_small": build_vit,
     "vit_base": build_vit,
     "prithvi_eo": build_generic,

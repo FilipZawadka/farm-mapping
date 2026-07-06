@@ -214,6 +214,9 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
     parts = [
         _SCRIPT_PREAMBLE,
         _LOAD_RUNPOD_ENV,
+        # Cache torchgeo/torch pretrained weights on the network volume so
+        # repeat pods don't re-download (e.g. SoftCon's ~98 MB checkpoint).
+        "export TORCH_HOME=/workspace/.torch",
         f"git config --global --add safe.directory {code_dir}",
         f"cd {code_dir}",
         git_sync,
@@ -223,6 +226,13 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
         f" && echo 'farm-venv found, skipping install'"
         f" || (python -m venv {venv}"
         f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)",
+        # An existing farm-venv is NOT reinstalled above, so a stale one may
+        # predate the SoftCon weights (torchgeo>=0.7.0). If this config uses the
+        # SoftCon backbone, verify the enum is importable and upgrade in place
+        # if not. Idempotent; only touches the venv when the config needs it.
+        f"if grep -q resnet50_softcon configs/{config_name};"
+        f" then {py} -c 'from torchgeo.models import ResNet50_Weights as W; W.SENTINEL2_ALL_SOFTCON' 2>/dev/null"
+        f" || {venv}/bin/pip install --no-cache-dir -U 'torchgeo>=0.7.0'; fi",
         # If the config points at all_clusters_v4.parquet but the file doesn't
         # exist yet, rebuild it from the seed parquets in data_seed/. Idempotent.
         f"if [ ! -f data/rachel_geometry_candidates/all_countries/all_clusters_v4.parquet ]"

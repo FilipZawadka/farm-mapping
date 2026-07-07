@@ -7,6 +7,8 @@ actual **eval / generalization / test metrics** where a run finished.
 For the codebase pieces (splits, patch cache, launcher…) see
 [`pipeline/`](pipeline/README.md). For the current active matrix and the
 research that shaped it see [`EXPERIMENTS_v8.md`](EXPERIMENTS_v8.md).
+For the post-v8 diagnosis and the ranked v9 plan see
+[`IMPROVEMENT_ROADMAP.md`](IMPROVEMENT_ROADMAP.md).
 
 ---
 
@@ -24,8 +26,12 @@ research that shaped it see [`EXPERIMENTS_v8.md`](EXPERIMENTS_v8.md).
 | v8_three_class | 0.403 | 0.444 | 0.747 | 0.018 | 0.397 | 0.000 | Bugfix rerun; features fine on test (f1_c2=0.45) but eval undershoot |
 | v8_ssl4eo      | **0.489** | 0.475 | 0.724 | **0.269** | **0.407** | 0.000 | S2-native pretrained backbone — wins on every headline |
 | v8_logitadj    | 0.470 | 0.549 | 0.596 | 0.265 | 0.330 | 0.000 | Train-time logit-adjusted CE; matches ssl4eo on eval OtherFarm |
-| v8_crt         | *in flight* | — | — | — | — | — | Freeze ssl4eo backbone, retrain head with balanced sampler |
+| v8_crt         | 0.494 | 0.495 | 0.723 | 0.264 | 0.426 | 0.000 | ssl4eo backbone frozen, head retrained balanced — best v8 overall (gen +0.019) |
 | v8_cloudfree   | *blocked (disk)* | — | — | — | — | — | Partial extraction hit disk quota mid-run |
+| v9_softcon     | **0.504** | 0.482 | 0.729 | **0.300** | 0.402 | 0.000 | SoftCon RN50 backbone — **best eval + best eval OtherFarm in the log** |
+| v9_ctx128      | 0.484 | 0.445 | 0.728 | 0.278 | **0.440** | 0.000 | ssl4eo + 128px context crop — **best generalization in the log** |
+| v9_softcon_ctx128 | 0.492 | 0.479 | 0.706 | 0.291 | 0.378 | 0.000 | Both levers combined — best *test* (0.751) but neither eval nor gen; **they don't stack** |
+| v9_imagenet9ch | 0.393 | 0.379 | 0.731 | 0.068 | 0.382 | 0.000 | ImageNet RN50 + 9 bands — ablation: **pretraining, not band count, drives the SSL win** |
 
 Eval = Rachel's per-country representative sample (~100–150 rows / country
 in the training-country set). Gen = BGD/NGA held-out OOD (present from v4
@@ -377,6 +383,86 @@ critical path.
 
 ---
 
+## world_v9 matrix (2026-07-07)
+
+Four single-variable runs off `world_v8_ssl4eo`, launched together on L4
+pods. **`data:`/`patches:` byte-identical to v8** (same imagery hash +
+seed 42 ⇒ identical split membership), so every number here is directly
+comparable to the v8 table. Motivation + provenance in
+[`IMPROVEMENT_ROADMAP.md`](IMPROVEMENT_ROADMAP.md). Judge on **eval**
+(Rachel's deployment-representative slice) and **gen** (BGD/NGA OOD), not
+test.
+
+### Training runs — full metrics
+
+Each three-class value is `(NotFarm / Poultry / OtherFarm)`.
+
+| Run | test macroF1 | test per-class | eval macroF1 | eval per-class | gen macroF1 | gen per-class |
+|---|---|---|---|---|---|---|
+| *v8_ssl4eo (baseline)* | 0.723 | 0.711 / 0.842 / 0.617 | 0.489 | 0.475 / 0.724 / 0.269 | 0.407 | 0.427 / 0.793 / 0.000 |
+| *v8_crt (prev. best)*  | 0.727 | 0.733 / 0.842 / 0.606 | 0.494 | 0.495 / 0.723 / 0.264 | 0.426 | 0.457 / 0.820 / 0.000 |
+| **v9_softcon**        | 0.724 | 0.706 / 0.841 / 0.624 | **0.504** | 0.482 / 0.729 / **0.300** | 0.402 | 0.404 / 0.801 / 0.000 |
+| **v9_ctx128**         | 0.729 | 0.715 / 0.847 / 0.625 | 0.484 | 0.445 / 0.728 / 0.278 | **0.440** | 0.469 / 0.852 / 0.000 |
+| **v9_softcon_ctx128** | **0.751** | 0.734 / 0.856 / **0.663** | 0.492 | 0.479 / 0.706 / 0.291 | 0.378 | 0.367 / 0.766 / 0.000 |
+| **v9_imagenet9ch**    | 0.617 | 0.586 / 0.810 / 0.456 | 0.393 | 0.379 / 0.731 / 0.068 | 0.382 | 0.306 / 0.839 / 0.000 |
+
+### Key readings
+
+- **SoftCon is the new eval winner.** `v9_softcon` (MoCo → SoftCon RN50,
+  per-band z-scored input) posts the **best eval macroF1 (0.504)** *and*
+  the **best eval OtherFarm F1 (0.300)** in the whole log — over v8_crt
+  (0.494 / 0.264) and v8_ssl4eo (0.489 / 0.269). Modest but real, and it
+  lands on the two metrics that matter most (deployment slice + hardest
+  class). Per-country the OtherFarm gain is Thailand 0.386, Mexico 0.364,
+  Brazil 0.214, Chile 0.195; US OtherFarm stays weak (0.133, only 3 eval
+  rows). test macroF1 is a dead heat with ssl4eo (0.724 vs 0.723).
+
+- **128px context is the OOD winner.** `v9_ctx128` (ssl4eo backbone,
+  `crop_center_px: 128` instead of 64) posts the **best generalization
+  macroF1 (0.440)**, over v8_crt's 0.426. 1.28 km of context helps
+  morphological transfer to BGD/NGA — consistent with the v8 AdaBN
+  finding that the OOD gap is morphological, not spectral. It does *not*
+  help the training-country eval slice (0.484 < softcon's 0.504).
+
+- **The two levers do NOT stack.** `v9_softcon_ctx128` wins **test**
+  (0.751, best in the log, OtherFarm 0.663) — but that's the wrong
+  target. Its eval (0.492) is *below* softcon-alone (0.504) and its gen
+  (0.378) is the **worst** of the four SSL-family runs, far under
+  ctx128-alone (0.440). Stacking both levers overfits the
+  training-country test distribution and *degrades* both deployment
+  metrics. softcon helps eval, ctx128 helps gen, and combining them
+  cancels on both.
+
+- **imagenet9ch settles the pretraining-vs-band-count confound.** The
+  v8_ssl4eo win over v8_three_class changed two things at once (S2-native
+  pretraining AND 4→9 channels). `v9_imagenet9ch` holds bands at 9 and
+  swaps only the backbone back to ImageNet: test **0.617** / eval
+  **0.393** — statistically indistinguishable from v8_three_class
+  (ImageNet, 4-band subset: 0.626 / 0.403) and *far* below every
+  S2-native run (~0.72 / ~0.49–0.50). Adding five channels to ImageNet
+  weights bought **nothing**; if anything test dipped. **The entire
+  SSL4EO/SoftCon advantage is S2-native pretraining, not channel count.**
+  This closes the open question from the v8 postmortem.
+
+- **gen OtherFarm F1 = 0.000 across all four**, as in every run since v4
+  — BGD/NGA have only 4 labelled OtherFarm rows total. Not diagnostic;
+  see the summary-table note.
+
+### Verdict + next lever
+
+No single run wins both deployment metrics: **softcon** owns eval /
+OtherFarm, **ctx128** owns OOD, and they don't compose. Since eval (the
+deployment-representative slice) is the primary target and cRT gave
+ssl4eo a clean +0.019 gen lift for free in v8, the teed-up follow-up is
+**`world_v9_softcon_crt`** — freeze the softcon backbone, retrain the
+head class-balanced (clone `world_v8_crt.yaml`, `resume_from`
+`data/output/world_v9_softcon/best_model.pt`, carry
+architecture/hub_name/`normalization: per_channel`, copy the
+`world_v9_softcon` norm-stats JSON to the new stem). Goal: keep softcon's
+eval-OtherFarm edge (0.300) while recovering the ~0.42 gen that cRT buys.
+
+---
+
 ## Cross-run inventory of scripts + configs added since v3
 
 Configs (all under [`configs/rachel_clusters/`](../configs/rachel_clusters/)):
@@ -385,7 +471,9 @@ Configs (all under [`configs/rachel_clusters/`](../configs/rachel_clusters/)):
 `world_v6_three_class.yaml`, `world_v7_three_class.yaml`,
 `world_v8_three_class.yaml`, `world_v8_crt.yaml`,
 `world_v8_logitadj.yaml`, `world_v8_ssl4eo.yaml`,
-`world_v8_cloudfree.yaml`.
+`world_v8_cloudfree.yaml`,
+`world_v9_softcon.yaml`, `world_v9_ctx128.yaml`,
+`world_v9_softcon_ctx128.yaml`, `world_v9_imagenet9ch.yaml`.
 
 Scripts (all under [`scripts/`](../scripts/)):
 - `merge_clusters_v3.py`, `merge_clusters_v4.py` — build the master parquet

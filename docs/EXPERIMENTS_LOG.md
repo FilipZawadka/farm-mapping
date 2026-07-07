@@ -32,6 +32,7 @@ For the post-v8 diagnosis and the ranked v9 plan see
 | v9_ctx128      | 0.484 | 0.445 | 0.728 | 0.278 | **0.440** | 0.000 | ssl4eo + 128px context crop — **best generalization in the log** |
 | v9_softcon_ctx128 | 0.492 | 0.479 | 0.706 | 0.291 | 0.378 | 0.000 | Both levers combined — best *test* (0.751) but neither eval nor gen; **they don't stack** |
 | v9_imagenet9ch | 0.393 | 0.379 | 0.731 | 0.068 | 0.382 | 0.000 | ImageNet RN50 + 9 bands — ablation: **pretraining, not band count, drives the SSL win** |
+| v9_softcon_crt | 0.497 | 0.487 | 0.715 | 0.291 | 0.382 | 0.000 | cRT head-rebalance on softcon — **NEGATIVE**: eval −0.007, gen −0.020 vs softcon-plain (cRT helped ssl4eo, not softcon) |
 
 Eval = Rachel's per-country representative sample (~100–150 rows / country
 in the training-country set). Gen = BGD/NGA held-out OOD (present from v4
@@ -405,6 +406,7 @@ Each three-class value is `(NotFarm / Poultry / OtherFarm)`.
 | **v9_ctx128**         | 0.729 | 0.715 / 0.847 / 0.625 | 0.484 | 0.445 / 0.728 / 0.278 | **0.440** | 0.469 / 0.852 / 0.000 |
 | **v9_softcon_ctx128** | **0.751** | 0.734 / 0.856 / **0.663** | 0.492 | 0.479 / 0.706 / 0.291 | 0.378 | 0.367 / 0.766 / 0.000 |
 | **v9_imagenet9ch**    | 0.617 | 0.586 / 0.810 / 0.456 | 0.393 | 0.379 / 0.731 / 0.068 | 0.382 | 0.306 / 0.839 / 0.000 |
+| **v9_softcon_crt**    | 0.736 | 0.725 / 0.844 / 0.639 | 0.497 | 0.487 / 0.715 / 0.291 | 0.382 | 0.393 / 0.752 / 0.000 |
 
 ### Key readings
 
@@ -448,18 +450,76 @@ Each three-class value is `(NotFarm / Poultry / OtherFarm)`.
   — BGD/NGA have only 4 labelled OtherFarm rows total. Not diagnostic;
   see the summary-table note.
 
-### Verdict + next lever
+### cRT on softcon — negative (2026-07-07)
 
-No single run wins both deployment metrics: **softcon** owns eval /
-OtherFarm, **ctx128** owns OOD, and they don't compose. Since eval (the
-deployment-representative slice) is the primary target and cRT gave
-ssl4eo a clean +0.019 gen lift for free in v8, the teed-up follow-up is
-**`world_v9_softcon_crt`** — freeze the softcon backbone, retrain the
-head class-balanced (clone `world_v8_crt.yaml`, `resume_from`
-`data/output/world_v9_softcon/best_model.pt`, carry
-architecture/hub_name/`normalization: per_channel`, copy the
-`world_v9_softcon` norm-stats JSON to the new stem). Goal: keep softcon's
-eval-OtherFarm edge (0.300) while recovering the ~0.42 gen that cRT buys.
+`world_v9_softcon_crt` freezes the softcon backbone and retrains the head
+class-balanced (clone of `world_v8_crt`, `resume_from`
+`world_v9_softcon/best_model.pt`, `normalization: per_channel`
+recomputed identically from the frozen split). Resume loaded cleanly;
+6 epochs, early-stopped, best val_f1 at epoch 1.
+
+| Slice | v9_softcon (parent) | v9_softcon_crt | Δ |
+|---|---|---|---|
+| test macroF1 | 0.724 | 0.736 | +0.012 |
+| eval macroF1 | **0.504** | 0.497 | **−0.007** |
+| eval OtherFarm | **0.300** | 0.291 | **−0.009** |
+| gen macroF1 | 0.402 | 0.382 | **−0.020** |
+
+cRT did the **opposite** of what it did for ssl4eo (v8: gen +0.019). It
+pushed the in-distribution **test up** but pulled **eval and gen down**.
+Softcon's natural-sampling head already sat at the log's best eval
+operating point (0.504); rebalancing shifted the boundary toward the
+in-distribution test set and away from the shifted eval/gen
+distributions. **cRT is off softcon's critical path.**
+
+### Verdict + where the representation axis lands
+
+Best models by slice, after the full v9 sweep:
+
+- **eval / eval-OtherFarm → `world_v9_softcon`** (0.504 / 0.300) — the
+  new deployment default.
+- **generalization (OOD) → `world_v9_ctx128`** (0.440).
+- The two don't compose (`softcon_ctx128`), and head-rebalancing
+  (`softcon_crt`) doesn't lift softcon.
+
+The backbone / crop / head-retrain axis is now **plateaued at eval
+≈ 0.50** — softcon beats ssl4eo by only +0.015 eval, and every
+head/context variant trades one deployment slice for another. This is
+exactly what the [roadmap](IMPROVEMENT_ROADMAP.md) predicted: the eval
+ceiling is a **label-source + geography shift** (train OtherFarm 98%
+registry / 56% USA vs eval OtherFarm 80% visual / 97% non-US), not a
+feature-representation problem — and AdaBN + logit-adjust + now cRT all
+confirm the classifier/representation is not where the remaining points
+are. The next real lever is the **data/label axis**, not another
+backbone: (a) a Rachel-side eval-vs-train OtherFarm label audit, (b)
+50–200 more labelled BGD/NGA clusters to make gen f1_class2 measurable,
+or (c) self-training on the 125,812-row unlabeled pool. Ship
+`world_v9_softcon` as the current best; stop tuning backbones.
+
+### Validity caveat (see `notebooks/model_evaluation_analysis.ipynb`, 2026-07-07)
+
+A full re-analysis from the raw `scored_candidates.parquet` (predictions
+re-derived, splits + metrics audited) confirms the metric code is sound
+(every eval/gen JSON reproduces exactly; splits are 100% stable across
+all v8/v9 runs; DMV pinned; no cluster in two splits) — **but the eval
+table above is optimistic and the fine ranking is not statistically
+resolvable**:
+
+- **Duplicate rows** (same `candidate_id`/coords/label survive de-dup)
+  inflate every labelled split: deduplicating eval drops macro-F1 by
+  ~0.03 (softcon 0.504 → 0.469). val is duplicated too → mild
+  checkpoint-selection bias.
+- **After dedup + 95% bootstrap CIs**, the top six S2-native models
+  (softcon, ssl4eo, crt, ctx128, softcon_ctx128) sit at **0.466–0.470
+  with CI width ~0.10 — a statistical tie.** The only robust eval signal
+  is **S2-native pretraining vs ImageNet (+~0.10, ≈2× CI)**. Read the v9
+  "winners" above as *ties*, not a pecking order.
+- **~27% of eval clusters** lie within a patch-width (1.28 km) of a train
+  cluster (no spatial-block splitting) → eval is mildly leakage-optimistic;
+  generalization (cross-country) is the cleaner OOD number.
+
+Fixes queued: de-dup the patch/candidate store; spatially-blocked splits;
+label BGD/NGA OtherFarm.
 
 ---
 

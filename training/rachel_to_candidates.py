@@ -178,6 +178,38 @@ def convert(
             "three_class labels (0=NotFarm 1=Poultry 2=OtherFarm): %s",
             {int(k): int(v) for k, v in counts.items()},
         )
+    elif label_mode == "four_class":
+        # 4-class: NotFarm / Poultry / Pigs / Cattle.
+        # Same ambiguous-drop policy as three_class; the only change is that
+        # Pigs and Cattle become separate classes instead of a merged
+        # "OtherFarm" (whose train mix is ~10:1 pigs:cattle -- see
+        # notebooks/rachel_v10_splits_analysis_2026-07-14.ipynb).
+        _DROP_4 = {"Farm: Mixed", "Farm: Other", "Farm: Unknown",
+                   "Farm: PigsOrPoultry"}
+        before = len(df)
+        df = df[~df[label_col].isin(_DROP_4)].copy()
+        log.info(
+            "four_class: dropped %d ambiguous farm samples (%d -> %d)",
+            before - len(df), before, len(df),
+        )
+        _MAP_4 = {
+            "NotFarm": 0,
+            "Farm: Poultry: Meat Chickens": 1,
+            "Farm: Poultry: Eggs": 1,
+            "Farm: Poultry: Unspecified/Other": 1,
+            "Farm: Pigs": 2,
+            "Farm: Cattle": 3,
+        }
+        def _to_label(x):
+            if pd.isna(x):
+                return -1
+            return _MAP_4.get(x, -1)
+        df["label"] = df[label_col].apply(_to_label)
+        counts = df["label"].value_counts().sort_index()
+        log.info(
+            "four_class labels (0=NotFarm 1=Poultry 2=Pigs 3=Cattle): %s",
+            {int(k): int(v) for k, v in counts.items()},
+        )
     elif label_mode == "multiclass":
         # 7-class farm-type taxonomy
         _MULTICLASS_MAP = {

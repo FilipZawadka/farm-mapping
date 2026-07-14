@@ -297,10 +297,15 @@ def convert(
             "num_bldgs", "total_area_m2", "median_area", "template_score_if"]
     out_df = df[[c for c in keep if c in df.columns]].copy()
 
-    # Save per country
+    # Save per country. Write-tmp-then-rename so a concurrently launched pod
+    # reading this shared candidates_dir never sees a truncated/empty CSV
+    # (a mid-write read crashed a parallel run's patch_extraction on
+    # 2026-07-14: pandas EmptyDataError on a half-written country file).
     for country_key, grp in out_df.groupby(df["country_key"]):
         path = candidates_dir / f"{country_key}.csv"
-        grp.to_csv(path, index=False)
+        tmp = path.with_suffix(".csv.tmp")
+        grp.to_csv(tmp, index=False)
+        tmp.replace(path)
         n_pos = (grp["label"] == 1).sum()
         n_neg = (grp["label"] == 0).sum()
         n_unk = (grp["label"] == -1).sum()

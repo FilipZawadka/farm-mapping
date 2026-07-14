@@ -119,6 +119,7 @@ def _attach_labels(result, candidates):
     for diag_col in (
         "original_label", "standardized_label", "visual_label",
         "label_source", "notes", "eval_set", "random_sample", "viz_status",
+        "cnn_split_assigned", "if_split_assigned",
     ):
         if diag_col not in candidates.columns:
             continue

@@ -233,6 +233,15 @@ def convert(
     if "random_sample" in df.columns:
         df["random_sample"] = df["random_sample"].fillna(False).astype(bool).astype(int)
 
+    # Rachel's explicit train/val/test/eval/generalization assignment (v10 rebuild).
+    # When present, this is the single source of truth for split membership --
+    # see training/dataset.py build_splits(). Absent/NaN (e.g. rest-of-world
+    # countries, or older parquets) falls through to "unlabeled" downstream.
+    if "cnn_split_assigned" in df.columns:
+        df["cnn_split_assigned"] = df["cnn_split_assigned"].fillna("")
+    if "if_split_assigned" in df.columns:
+        df["if_split_assigned"] = df["if_split_assigned"].fillna("")
+
     # Infer US states from coordinates
     us_mask = df["country_key"] == "united_states"
     df["state"] = ""
@@ -252,6 +261,7 @@ def convert(
     keep = ["id", "name", "lat", "lng", "species", "category", "source",
             "country", "state", "label", "region", "viz_status",
             "visual_label", "label_source", "eval_set", "random_sample",
+            "cnn_split_assigned", "if_split_assigned",
             "num_bldgs", "total_area_m2", "median_area", "template_score_if"]
     out_df = df[[c for c in keep if c in df.columns]].copy()
 
@@ -263,9 +273,10 @@ def convert(
         n_neg = (grp["label"] == 0).sum()
         n_unk = (grp["label"] == -1).sum()
         n_eval = int(grp["eval_set"].sum()) if "eval_set" in grp.columns else 0
+        n_explicit = int((grp["cnn_split_assigned"] != "").sum()) if "cnn_split_assigned" in grp.columns else 0
         log.info(
-            "Saved %d candidates to %s (pos=%d, neg=%d, unlabeled=%d, eval_set=%d)",
-            len(grp), path, n_pos, n_neg, n_unk, n_eval,
+            "Saved %d candidates to %s (pos=%d, neg=%d, unlabeled=%d, eval_set=%d, cnn_split_assigned=%d)",
+            len(grp), path, n_pos, n_neg, n_unk, n_eval, n_explicit,
         )
 
     log.info("Done. Total: %d candidates", len(out_df))

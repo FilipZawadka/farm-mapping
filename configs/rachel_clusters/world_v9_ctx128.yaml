@@ -10,12 +10,18 @@
 # Data/patches/candidates_dir/runpod byte-identical to world_v8_ssl4eo, so
 # directly comparable (same seed 42 => identical split membership; same
 # imagery hash => reuses the existing patch store).
+#
+# parquet_source bumped to v5: Rachel added an explicit `cnn_split_assigned`
+# column (train/val/test/eval/generalization/predict) that is now the single
+# source of truth for split membership -- see build_splits(). Same cluster_id
+# / patch store as v4 (verified 100% stable), so no re-extraction needed;
+# only the split assignment changed.
 # ============================================================================
 run_name: "world_v9_ctx128"
 
 data:
   candidates_dir: data/rachel_geometry_candidates/candidates_world_v8_three_class
-  parquet_source: data/rachel_geometry_candidates/all_countries/all_clusters_v4.parquet
+  parquet_source: data/rachel_geometry_candidates/all_countries/all_clusters_v5.parquet
   inspected_as_test: true
   include_unlabeled: true
   label_mode: three_class

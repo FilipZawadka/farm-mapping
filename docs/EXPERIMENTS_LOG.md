@@ -547,3 +547,42 @@ Scripts (all under [`scripts/`](../scripts/)):
 
 Core code deltas: see the diffs on each commit listed in the postmortem
 section for the exact splits/model/training/normalization changes.
+
+---
+
+## v10 — Rachel's explicit splits + the OtherFarm experiment matrix (2026-07-14/15)
+
+**Split regime change.** Rachel added `cnn_split_assigned`
+(train/val/test/eval/generalization/predict) to the for_analysis files —
+now the single source of truth in `build_splits()` (pass-through, gated on
+column presence; no RNG). All runs below share identical splits:
+train=10633 / val=2268 / test=2290 / eval=653 / gen=273 (patch rows).
+`all_clusters_v5.parquet` + `scripts/merge_clusters_v5.py` carry the column;
+DMV rows are now spread across train/val/test by Rachel (the
+`dmv_force_to_train_only` flag is a no-op on this path). v3/v9_softcon/
+v9_ctx128 were re-run on these splits; v3's old headline numbers turned out
+to be a small-sample artifact of the old 66-per-country quota test set.
+
+**Baselines on v10 splits** (dedup, macro-F1 — test / eval / gen):
+v9_softcon **0.712 / 0.462 / 0.400**; v9_ctx128(SSL4EO) 0.710 / 0.469 / 0.415;
+v3(ImageNet 4ch) 0.526 / 0.399 / 0.298.
+Diagnosis motivating the matrix: dominant eval failure = OtherFarm→Poultry
+(71% of eval Pigs predicted Poultry); train OtherFarm is a 10:1 pigs:cattle
+merge; Poultry:Pigs+Cattle = 4:1 in train.
+
+**Experiment matrix** (single levers off v9_softcon; 3-class-comparable
+numbers, fourclass collapsed Cattle→OtherFarm):
+
+| run | test | eval | gen | eval Pigs→Poultry | verdict |
+|---|---|---|---|---|---|
+| `world_v10_fourclass_softcon` | 0.716 | 0.460 | 0.373 | 74% | **No effect.** Splitting Pigs/Cattle didn't de-dilute the pig signature; Cattle (131 train rows) was never predicted once. Refutes the merge-dilution hypothesis. |
+| `world_v10_softcon_balanced` | 0.690 | 0.440 | 0.330 | 44% | **Boundary moves, quality doesn't.** OtherFarm recall 0.23→0.39, but precision 0.21→0.15 (F1 flat 0.22) and Poultry recall 0.82→0.55; gen −0.07. Use only if pig-farm *recall* is the deployment goal. |
+| `world_v10_softcon_ctx128` | 0.721 | 0.457 | 0.409 | 77% | Best test F1 of any run, but eval/gen tie the single-lever baselines — SoftCon+context not additive (matches the old-split finding). |
+
+**Takeaway.** Neither taxonomy (4-class) nor imbalance (balanced sampling)
+is the eval bottleneck. Eval pigs are missed at similar rates whether
+registry-labelled (18% correct) or visually-labelled (24%) — the gap is
+train-vs-eval *population* shift (registry CAFOs vs Rachel's representative
+sample), consistent with AdaBN/logit-adjust/cRT all failing earlier. Next
+lever should be data-centric: more representative-sample OtherFarm labels
+in train (Rachel's call), or spatially/visually harder positives.

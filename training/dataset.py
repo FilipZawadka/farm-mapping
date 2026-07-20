@@ -17,7 +17,13 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from .config import PipelineConfig, imagery_config_hash, matches_any_region, build_country_key_map
+from .config import (
+    PipelineConfig,
+    imagery_config_hash,
+    matches_any_region,
+    build_country_key_map,
+    validate_patch_locations,
+)
 
 log = logging.getLogger(__name__)
 
@@ -607,6 +613,11 @@ def build_splits(
     valid_ids = set(candidates["id"].astype(str))
     meta = meta[meta["candidate_id"].astype(str).isin(valid_ids)].reset_index(drop=True)
     log.info("Filtered to %d patches matching config candidates", len(meta))
+
+    # Refuse patches whose stored extraction coords no longer match the
+    # candidate's current coords (stale cluster_id mapping after a merge
+    # re-run renumbered ids). Raises if >5% are stale -- re-run extraction.
+    meta = validate_patch_locations(meta, candidates, context="build_splits")
 
     meta["_label"] = meta["candidate_id"].astype(str).map(label_map).astype(int)
 

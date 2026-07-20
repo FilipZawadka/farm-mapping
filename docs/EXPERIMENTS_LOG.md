@@ -586,3 +586,57 @@ train-vs-eval *population* shift (registry CAFOs vs Rachel's representative
 sample), consistent with AdaBN/logit-adjust/cRT all failing earlier. Next
 lever should be data-centric: more representative-sample OtherFarm labels
 in train (Rachel's call), or spatially/visually harder positives.
+
+---
+
+## 2026-07-20 — CRITICAL: stale ID-keyed patch store invalidates all runs after original world_v3 ("geofix")
+
+**Found by Filip** via a single spot check: `MEX_cluster_16331` scored
+farm=0.963 at (25.637, -101.831) — a real, obvious egg farm — but Rachel's
+current file puts that cluster_id at (19.234, -96.186), a NotFarm. The model
+was shown one location's image with another location's label.
+
+**Mechanism.** Patches are keyed by `cluster_id` (+ imagery_config_hash) at
+every join point — `{id}.npy` filenames, `patch_meta.csv`, label attach —
+with no spatial check, and `patch_extraction.py` skips any id already in the
+store. The store (hash `cc5a6ebb502a`, extracted ~03-18) predates the
+**06-23 merge re-run that renumbered 93.5% of cluster_ids** (see 07-08
+diagnosis; parquet geometry+label content was unchanged — only the
+id↔cluster mapping churned). Every candidates build after 06-23 therefore
+silently reused patches of different physical clusters.
+
+**Blast radius** (patch coords vs current v5 centroid, >250 m = stale;
+median displacement 100s of km; rest-of-world control 0.04%):
+v1/v2 parquets 0.0% · v3_0618 snapshot 1.8% · v3_0623/v4/v5 **34.3–34.6%**.
+Per-country (labeled rows): USA 37% / BRA 36% / CHL 48% / MEX 38% / THA 21%
+/ BGD 21% / NGA 32% — across ALL splits incl. eval + generalization.
+**Clean:** baseline_v2/world_v2 era + original world_v3 (trained 06-21 on
+old ids — why "old model 3" genuinely looked better; the v3→v4 eval cliff
+0.534→0.433 coincides exactly with misalignment onset). **Contaminated:**
+world_v4→v9 and every v10 run above, incl. both Mexico runs. The MEX binary
+run had 949/2495 (38%) wrong-location rows; among 384 with known
+old-location labels, 84 (22%) were outright binary image/label
+contradictions. All v10-matrix conclusions above are unreliable until
+re-run; measured metrics since 06-23 are floors (many "false positives"
+were the model correctly describing the image it was shown).
+
+**Fix.**
+1. `training/config.py validate_patch_locations()` (+ `haversine_m`,
+   `MAX_PATCH_COORD_DRIFT_M=250`): dedup patch_meta keep-last per
+   candidate_id and drop rows whose stored extraction coords are >250 m
+   from the candidate's current coords. Wired into `dataset.py
+   build_splits` and `inference.py score_candidates` (raise if >5% stale —
+   store needs re-extraction) and into the `patch_extraction.py`
+   skip-cache (stale ids re-extract instead of being skipped; the appended
+   row supersedes via keep-last). Also retires the Thailand ×3 duplicate
+   artifact (append-only meta now deduped at every consumer).
+2. Store repaired by re-running candidates + patch_extraction against v5
+   (~24.7k stale patches re-extracted at their current locations).
+3. Re-runs (same config stems, `run_name: *_geofix`): world_v3_three_class,
+   world_v9_softcon, world_v9_ctx128, world_v10_mex_binary_bal. Old
+   contaminated metrics preserved in notebooks/results_cache/ + the tables
+   above; website entries to be republished from the geofix runs.
+4. Process note: treat Rachel's cluster_ids as **ephemeral** — any of her
+   merge re-runs may renumber them (BGD/NGA show a second churn event).
+   Never join her exports to our stores by id across pulls; the coordinate
+   guard now enforces this mechanically.

@@ -273,6 +273,79 @@ def imagery_config_hash(patch_cfg: PatchConfig) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
+# Max distance between a stored patch's extraction coords and the candidate's
+# current coords before the patch is considered stale. Cluster ids are NOT
+# stable across Rachel's merge re-runs (06-23 renumbered 93.5% of ids; see
+# docs/EXPERIMENTS_LOG.md 2026-07-20), so an id-keyed patch can silently point
+# at a different physical cluster. 250 m tolerates centroid drift from minor
+# cluster-membership edits while catching real reassignment (median ~100s km).
+MAX_PATCH_COORD_DRIFT_M = 250.0
+
+
+def haversine_m(lat1, lng1, lat2, lng2):
+    """Vectorized great-circle distance in metres (accepts scalars or arrays)."""
+    import numpy as np
+
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    a = np.sin((p2 - p1) / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(
+        np.radians(np.asarray(lng2) - np.asarray(lng1)) / 2
+    ) ** 2
+    return 2 * 6371000.0 * np.arcsin(np.sqrt(a))
+
+
+def validate_patch_locations(
+    meta,
+    candidates,
+    max_drift_m: float = MAX_PATCH_COORD_DRIFT_M,
+    context: str = "",
+    max_stale_frac: float | None = 0.05,
+):
+    """Return *meta* rows whose stored extraction coords match the candidate's
+    current coords, deduped to one row per candidate_id (keep last = newest
+    extraction wins over superseded ones in the append-only patch_meta.csv).
+
+    Rows with drift > *max_drift_m* (or with no lat/lng) are dropped with a
+    warning. If more than *max_stale_frac* of matched rows are stale, raise --
+    that means the store needs re-extraction (run the patch_extraction step),
+    not silent training on a shrunken sample. Pass ``max_stale_frac=None`` to
+    only warn (used by patch_extraction itself, which fixes stale rows).
+    """
+    import logging
+
+    import numpy as np
+
+    log = logging.getLogger(__name__)
+    meta = meta.drop_duplicates(subset="candidate_id", keep="last")
+    if not {"lat", "lng"}.issubset(meta.columns):
+        log.warning("%s: patch_meta has no lat/lng columns -- cannot validate patch locations", context)
+        return meta.reset_index(drop=True)
+    ids = candidates["id"].astype(str).values
+    pos_lat = dict(zip(ids, candidates["lat"].values))
+    pos_lng = dict(zip(ids, candidates["lng"].values))
+    cid = meta["candidate_id"].astype(str)
+    cand_lat = cid.map(pos_lat).values.astype(float)
+    cand_lng = cid.map(pos_lng).values.astype(float)
+    drift = haversine_m(meta["lat"].values.astype(float), meta["lng"].values.astype(float), cand_lat, cand_lng)
+    # NaN drift (missing coords on either side) counts as stale: unverifiable.
+    ok = np.asarray(drift <= max_drift_m)
+    n_stale = int((~ok).sum())
+    if n_stale:
+        frac = n_stale / max(len(meta), 1)
+        log.warning(
+            "%s: dropping %d/%d patches whose stored location is >%.0f m from the "
+            "candidate's current position (stale cluster_id mapping)",
+            context, n_stale, len(meta), max_drift_m,
+        )
+        if max_stale_frac is not None and frac > max_stale_frac:
+            raise RuntimeError(
+                f"{context}: {n_stale}/{len(meta)} ({frac:.1%}) patches are stale "
+                f"(extracted >{max_drift_m:.0f} m from the candidate's current location). "
+                "The patch store is out of sync with the candidates -- re-run the "
+                "patch_extraction step to re-extract them before training/inference."
+            )
+    return meta[ok].reset_index(drop=True)
+
+
 def imagery_metadata(patch_cfg: PatchConfig, band_names: list[str]) -> dict[str, str]:
     """Metadata dict for patch_meta.csv describing the imagery source."""
     if patch_cfg.imagery_sources:

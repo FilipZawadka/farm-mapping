@@ -31,6 +31,7 @@ from .config import (
     load_config,
     resolve_paths,
     cache_key,
+    validate_patch_locations,
 )
 from .imagery import resolve_imagery_sources
 from .imagery.base import ResolvedSource
@@ -330,18 +331,36 @@ def extract_patches(
     # config (resume support). Filtering by imagery_config_hash so a config
     # change (e.g. cloud_mask, bands) triggers fresh extraction instead of
     # skipping candidates that only have patches under the previous hash.
+    # A patch only counts as already-extracted if its stored coords still
+    # match the candidate's current coords: cluster ids are not stable across
+    # Rachel's merge re-runs, so an id-keyed patch can point at a different
+    # physical cluster than the candidate now does. Stale ones re-extract
+    # (np.save overwrites the .npy; the appended meta row supersedes via
+    # keep-last dedup in validate_patch_locations).
     meta_path = patches_root / "patch_meta.csv"
     skip_ids: set[str] = set()
     if meta_path.exists():
         try:
-            meta_df = pd.read_csv(meta_path, usecols=["candidate_id", "imagery_config_hash"])
-            skip_ids = set(
-                meta_df[meta_df["imagery_config_hash"].astype(str) == imagery_hash]["candidate_id"].astype(str)
+            meta_df = pd.read_csv(
+                meta_path, usecols=["candidate_id", "imagery_config_hash", "lat", "lng"],
+                low_memory=False,
             )
+            meta_df = meta_df[meta_df["imagery_config_hash"].astype(str) == imagery_hash]
         except (ValueError, KeyError):
-            # Legacy meta files that predate imagery_config_hash — fall back
-            # to skipping all listed candidates.
-            skip_ids = set(pd.read_csv(meta_path, usecols=["candidate_id"])["candidate_id"].astype(str))
+            # Legacy meta files that predate imagery_config_hash.
+            meta_df = pd.read_csv(meta_path, usecols=["candidate_id", "lat", "lng"], low_memory=False)
+        cand_ids = set(candidates["id"].astype(str))
+        meta_df = meta_df[meta_df["candidate_id"].astype(str).isin(cand_ids)]
+        ok = validate_patch_locations(
+            meta_df, candidates, context="patch_extraction skip-cache", max_stale_frac=None,
+        )
+        n_stale = len(meta_df.drop_duplicates("candidate_id")) - len(ok)
+        if n_stale:
+            log.warning(
+                "Re-extracting %d patches whose stored location no longer matches "
+                "the candidate (stale cluster_id mapping).", n_stale,
+            )
+        skip_ids = set(ok["candidate_id"].astype(str))
 
     # Also skip previously failed patches (unless retry_failed is set)
     if not patch_cfg.retry_failed:

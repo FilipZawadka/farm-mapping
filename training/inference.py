@@ -202,6 +202,12 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     meta = meta[meta["candidate_id"].astype(str).isin(config_ids)].reset_index(drop=True)
     log.info("Filtered to %d patches matching config candidates", len(meta))
 
+    # Dedup per candidate (append-only meta can hold superseded rows) and
+    # refuse patches whose stored coords no longer match the candidate --
+    # otherwise a renumbered cluster_id scores the wrong location's imagery.
+    from .config import validate_patch_locations
+    meta = validate_patch_locations(meta, candidates, context="score_candidates")
+
     valid_ids = set(meta["candidate_id"].astype(str))
     cands_filtered = candidates[candidates["id"].astype(str).isin(valid_ids)].copy()
 

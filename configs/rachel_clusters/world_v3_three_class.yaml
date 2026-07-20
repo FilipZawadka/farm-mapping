@@ -15,8 +15,12 @@
 #   are unused in this mode.
 # - Inference scores all clusters (include_unlabeled: true).
 # ============================================================================
+# GEOFIX re-run (2026-07-20): previous run trained/evaluated with ~34.6% of
+# labeled-country patches showing the WRONG location (patch store keyed by
+# cluster_id survived the 06-23 id renumbering). Store repaired + pipeline now
+# validates patch coords (training/config.py validate_patch_locations).
 
-run_name: "world_v3_three_class"
+run_name: "world_v3_three_class_geofix"
 
 data:
   candidates_dir: data/rachel_geometry_candidates/candidates_world_v3_three_class

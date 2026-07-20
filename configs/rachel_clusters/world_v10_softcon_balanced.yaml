@@ -8,7 +8,11 @@
 # Poultry), consistent with a prior biased toward the majority class.
 # Splits from Rachel's explicit cnn_split_assigned (all_clusters_v5.parquet).
 # ============================================================================
-run_name: "world_v10_softcon_balanced"
+# GEOFIX re-run (2026-07-20): previous run trained/evaluated with ~34.6% of
+# labeled-country patches showing the WRONG location (patch store keyed by
+# cluster_id survived the 06-23 id renumbering). Store repaired + pipeline now
+# validates patch coords (training/config.py validate_patch_locations).
+run_name: "world_v10_softcon_balanced_geofix"
 
 data:
   candidates_dir: data/rachel_geometry_candidates/candidates_world_v8_three_class

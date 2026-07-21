@@ -59,17 +59,35 @@ def main() -> None:
     lat, lng = shapely.get_y(g), shapely.get_x(g)
     print(f"target parquet: {len(df):,} clusters")
 
-    already = set(cur["candidate_id"].astype(str))
-    need = ~df["cluster_id"].astype(str).isin(already)
-    print(f"  already reachable by id: {(~need).sum():,}")
-    print(f"  need a mapping         : {need.sum():,}")
-    if not need.any():
-        print("nothing to do")
-        return
-
     lat0 = float(np.nanmean(lat))
     def xy(la, lo):
         return np.c_[la * 111_320.0, lo * 111_320.0 * np.cos(np.radians(lat0))]
+
+    # An id needs a mapping when it is ABSENT from the store, and equally when
+    # it is PRESENT but its stored patch sits somewhere else -- a renumbering
+    # reassigns existing ids to new locations, so "the id is known" does not
+    # mean "the patch is right". Missing that second case is what left ~15k
+    # patches to be re-fetched from Earth Engine on the v5->v6 rebuild: the
+    # coordinate guard correctly refused them, but a usable patch for the same
+    # place was already on disk under a different id.
+    stored = cur.set_index(cur["candidate_id"].astype(str))[["lat", "lng"]]
+    cid = df["cluster_id"].astype(str)
+    s_lat = cid.map(stored["lat"]).to_numpy(dtype=float)
+    s_lng = cid.map(stored["lng"]).to_numpy(dtype=float)
+    known = ~np.isnan(s_lat)
+    off = np.full(len(df), np.inf)
+    if known.any():
+        d = xy(lat[known], lng[known]) - xy(s_lat[known], s_lng[known])
+        off[known] = np.hypot(d[:, 0], d[:, 1])
+    absent = ~known
+    relocated = known & (off > args.tolerance_m)
+    need = pd.Series(absent | relocated, index=df.index)
+    print(f"  already reachable by id: {int((known & ~relocated).sum()):,}")
+    print(f"  need a mapping         : {int(need.sum()):,} "
+          f"({int(absent.sum()):,} id absent, {int(relocated.sum()):,} id present but relocated)")
+    if not need.any():
+        print("nothing to do")
+        return
 
     tree = cKDTree(xy(cur["lat"].to_numpy(), cur["lng"].to_numpy()))
     tgt_lat, tgt_lng = lat[need.to_numpy()], lng[need.to_numpy()]

@@ -61,7 +61,14 @@ def partition(counts: pd.Series, n: int) -> list[list[str]]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", required=True, type=Path, help="trained model's config.yaml")
+    ap.add_argument("--base", required=True, type=Path,
+                     help="config to copy model/patch/training settings from")
+    ap.add_argument("--model-stem",
+                     help="config stem that actually TRAINED the checkpoint, if different from "
+                          "--base (e.g. scoring a new data version with an existing model). "
+                          "Determines inference.checkpoint and inference.norm_stats_stem, since "
+                          "both the checkpoint and the norm-stats/splits files live under the "
+                          "training run's stem. Defaults to --base's stem.")
     ap.add_argument("--parquet", required=True, type=Path, help="all_clusters parquet (for country counts)")
     ap.add_argument("--shards", type=int, default=4)
     ap.add_argument("--name", required=True, help="config stem prefix, e.g. world_v10_fourclass_scoreall")
@@ -73,7 +80,7 @@ def main() -> None:
     args = ap.parse_args()
 
     base = yaml.safe_load(args.base.read_text())
-    base_stem = args.base.stem
+    base_stem = args.model_stem or args.base.stem
 
     counts = country_keys(args.parquet)
     shards, totals = partition(counts, args.shards)

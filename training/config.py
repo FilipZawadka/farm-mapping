@@ -147,6 +147,13 @@ class DataConfig(BaseModel):
     label_mode: str = "binary"
     # Drop rows with these modified_label values entirely
     exclude_labels: list[str] = Field(default_factory=list)
+    # Keep rows whose label has no slot in the active taxonomy ("Ambiguous",
+    # and the Mixed/Other/Unknown/PigsOrPoultry farm types that three_class and
+    # four_class drop) instead of removing them. They become label=-1, so they
+    # are never trained on -- but they DO get scored by an inference run with
+    # include_unlabeled + inference.labeled_only=false. Default False keeps the
+    # training-time row set byte-identical to every published model.
+    keep_unscorable_labels: bool = False
     # Drop rows where original_label contains "OSM" and row appears to be a farm
     exclude_osm_farms: bool = False
     osm_farm_cache_dir: str = "data/cache/osm_farm_finder"
@@ -598,6 +605,24 @@ class InferenceConfig(BaseModel):
     # Test-time augmentation: average softmax probabilities over the 8
     # dihedral transforms (4 rotations x 2 flips). ~8x slower inference.
     tta: bool = False
+    # Inference-time DataLoader tuning. Scoring is forward-only (no gradients,
+    # no optimizer state) so it fits a much larger batch than training and
+    # benefits from parallel patch loading -- the loader, not the GPU, is the
+    # bottleneck on big scoring jobs. None => fall back to the training values.
+    # Neither affects results: shuffle=False and the model is in eval().
+    batch_size: Optional[int] = None
+    num_workers: Optional[int] = None
+    # Load per-channel norm stats (and split assignments) from ANOTHER config's
+    # stem. Those files are keyed by config filename and only written at train
+    # time, so an inference-only config -- e.g. a scoring shard -- would
+    # otherwise fail to find them. Point this at the config that trained the
+    # checkpoint being scored with.
+    norm_stats_stem: Optional[str] = None
+    # Autocast the forward pass to fp16 on CUDA. Materially faster on large
+    # jobs, but it perturbs probabilities at ~1e-3, which can flip argmax on
+    # near-ties -- so it defaults OFF to keep re-exports bit-comparable with
+    # already-published releases. Opt in per-config for throughput-bound runs.
+    mixed_precision: bool = False
 
 
 class VizConfig(BaseModel):

@@ -69,6 +69,7 @@ def convert(
     exclude_labels: list[str] | None = None,
     exclude_osm_farms: bool = False,
     inspected_only: bool = False,
+    keep_unscorable_labels: bool = False,
 ) -> pd.DataFrame:
     """Convert parquet to candidate CSVs.
 
@@ -81,6 +82,16 @@ def convert(
         exclude_osm_farms: If True, drop rows where original_label contains "OSM"
             and the row is tagged as a farm (via standardized_label or OSM farm tags).
         inspected_only: If True, keep only rows with viz_status == "inspected".
+        keep_unscorable_labels: If True, KEEP rows whose label has no slot in the
+            active taxonomy instead of dropping them: "Ambiguous" (dropped
+            unconditionally by every mode) and the ambiguous farm types that
+            three_class/four_class drop (Mixed/Other/Unknown/PigsOrPoultry).
+            They fall through the label maps to ``label = -1`` (the unlabeled
+            sentinel), so they never contaminate training -- but they DO reach
+            the candidate CSVs, which is what an inference-only "score
+            everything we have" run needs. Their real label text still rides
+            along in original_label/standardized_label/final_label.
+            Default False preserves the exact training-time row set.
 
     Returns the full DataFrame for inspection.
     """
@@ -103,8 +114,11 @@ def convert(
         df = df[df["viz_status"] == "inspected"].copy()
         log.info("Inspected only: %d -> %d", before, len(df))
 
-    # Exclude ambiguous
-    df = df[df[label_col] != "Ambiguous"].copy() if label_col in df.columns else df.copy()
+    # Exclude ambiguous (kept, as label=-1, when scoring everything)
+    if label_col in df.columns and not keep_unscorable_labels:
+        df = df[df[label_col] != "Ambiguous"].copy()
+    else:
+        df = df.copy()
 
     # Exclude specific labels
     if exclude_labels:
@@ -155,11 +169,18 @@ def convert(
         _DROP_3 = {"Farm: Mixed", "Farm: Other", "Farm: Unknown",
                    "Farm: PigsOrPoultry"}
         before = len(df)
-        df = df[~df[label_col].isin(_DROP_3)].copy()
-        log.info(
-            "three_class: dropped %d ambiguous farm samples (%d -> %d)",
-            before - len(df), before, len(df),
-        )
+        if not keep_unscorable_labels:
+            df = df[~df[label_col].isin(_DROP_3)].copy()
+            log.info(
+                "three_class: dropped %d ambiguous farm samples (%d -> %d)",
+                before - len(df), before, len(df),
+            )
+        else:
+            n_kept = int(df[label_col].isin(_DROP_3).sum())
+            log.info(
+                "three_class: keep_unscorable_labels -- keeping %d ambiguous farm "
+                "samples as label=-1 (scored, never trained on)", n_kept,
+            )
         _MAP_3 = {
             "NotFarm": 0,
             "Farm: Poultry: Meat Chickens": 1,
@@ -187,11 +208,18 @@ def convert(
         _DROP_4 = {"Farm: Mixed", "Farm: Other", "Farm: Unknown",
                    "Farm: PigsOrPoultry"}
         before = len(df)
-        df = df[~df[label_col].isin(_DROP_4)].copy()
-        log.info(
-            "four_class: dropped %d ambiguous farm samples (%d -> %d)",
-            before - len(df), before, len(df),
-        )
+        if not keep_unscorable_labels:
+            df = df[~df[label_col].isin(_DROP_4)].copy()
+            log.info(
+                "four_class: dropped %d ambiguous farm samples (%d -> %d)",
+                before - len(df), before, len(df),
+            )
+        else:
+            n_kept = int(df[label_col].isin(_DROP_4).sum())
+            log.info(
+                "four_class: keep_unscorable_labels -- keeping %d ambiguous farm "
+                "samples as label=-1 (scored, never trained on)", n_kept,
+            )
         _MAP_4 = {
             "NotFarm": 0,
             "Farm: Poultry: Meat Chickens": 1,

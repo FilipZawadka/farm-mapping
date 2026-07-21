@@ -319,6 +319,24 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     else:
         result["split"] = "unknown"
 
+    # Rachel's own assignment is the authority, and a scoring run routinely
+    # covers candidates the training splits file never saw -- either because
+    # they postdate it, or because a rebuild renumbered cluster_ids so the id
+    # lookup above cannot match. Backfill (never overwrite) from
+    # cnn_split_assigned so slices like `qual_eval` -- her qualitative-eval
+    # pool, which is scored but deliberately never trained on -- survive into
+    # the scored output instead of collapsing to "unknown".
+    if "cnn_split_assigned" in result.columns:
+        explicit = result["cnn_split_assigned"].astype(str).str.strip()
+        fill = result["split"].isin(["unknown", ""]) & explicit.ne("") & explicit.ne("nan")
+        if fill.any():
+            result.loc[fill, "split"] = explicit[fill]
+            log.info(
+                "Backfilled `split` for %d rows from cnn_split_assigned: %s",
+                int(fill.sum()),
+                result.loc[fill, "split"].value_counts().to_dict(),
+            )
+
     geometry = [Point(lng, lat) for lng, lat in zip(result["lng"], result["lat"])]
     scored_gdf = gpd.GeoDataFrame(result, geometry=geometry, crs="EPSG:4326")
 

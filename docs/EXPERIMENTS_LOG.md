@@ -640,3 +640,50 @@ were the model correctly describing the image it was shown).
    merge re-runs may renumber them (BGD/NGA show a second churn event).
    Never join her exports to our stores by id across pulls; the coordinate
    guard now enforces this mechanically.
+
+---
+
+## 2026-07-21 — geofix results in: all 7 runs republished; matrix verdict reverses
+
+All 7 planned geofix re-runs completed (the 3 baselines, Mexico binary, and
+the 3-experiment matrix). `world_v3_three_class`'s first relaunch stalled
+12+ hours with zero checkpoints on an apparently-bad pod/GPU (every sibling
+finished in <70 min); killed and retried cleanly on a fresh pod.
+
+**Corrected numbers (test / eval / generalization macro-F1, geofix vs the
+contaminated numbers above):**
+world_v9_softcon 0.890/0.631/0.486 (was 0.712/0.462/0.400);
+world_v9_ctx128(SSL4EO) 0.902/0.641/0.443 (was 0.710/0.469/0.415);
+world_v3_three_class(ImageNet 4ch) 0.716/0.523/0.397 (was 0.526/0.399/0.298);
+Mexico binary AUC 0.99 test / 0.93 eval (was 0.74 / 0.73). Every baseline
+improved substantially, confirming the misaligned patches were suppressing
+real model quality, not just adding noise.
+
+**Experiment-matrix verdict reverses under corrected data** (vs the
+world_v9_softcon geofix baseline; fourclass collapses Pigs+Cattle back to
+OtherFarm for an apples-to-apples comparison):
+
+| run | eval macro-F1 | eval OtherFarm→Poultry | verdict |
+|---|---|---|---|
+| fourclass_softcon | 0.657 (collapsed) | Pigs→Poultry 53% | **No effect**, confirming the original (contaminated-data) finding survives: splitting Pigs/Cattle doesn't touch the confusion (52%→53%, noise). |
+| softcon_balanced | **0.658** | **38%** | **Real win** — reverses the old conclusion ("boundary moves, quality doesn't"). Confusion 52%→38%, eval F1 +0.027, test flat. The old verdict was measured on scrambled image/label pairs; balanced sampling's effect was there all along. |
+| softcon_ctx128 | 0.648 | 42% | **Partial win**, also reversed from "not additive" — confusion 52%→42%, eval F1 +0.017. |
+
+**Updated takeaway.** The imbalance lever (balanced_class_sampling) is a
+real, meaningful fix for the OtherFarm→Poultry confusion — the opposite of
+what the contaminated-data run showed. The taxonomy lever (4-class split)
+still does nothing, on clean data as on dirty. Recommend folding
+balanced_class_sampling into the next baseline by default and combining it
+with the wider context crop (both independently helped; untested together).
+
+**Website fixes alongside republishing:** `EvalBreakdown.tsx` hardcoded
+"3-class" in its view toggle and footer caption regardless of the actual
+release — wrong for the 4-class release, now derived from `classes`. Every
+release's `model` field was a generic placeholder regardless of actual
+backbone (SoftCon/SSL4EO/ImageNet) — now set per-release. The 3
+experiment-matrix releases only stated their hypothesis, never a result —
+now carry the verdicts above. Every release also got its exact archived
+`config.yaml` attached (viewable/downloadable from the site) and generic
+(not hand-allowlisted) column forwarding end to end — see
+`training/rachel_to_candidates.py`, `training/inference.py`,
+`web/scripts/export_dataset.py`, `web/src/lib/download.ts`.

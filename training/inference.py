@@ -113,19 +113,21 @@ def _attach_labels(result, candidates):
         result[col] = result["candidate_id"].astype(str).map(mapping).fillna(fill)
     result["true_label"] = result["true_label"].astype(int)
 
-    # Propagate diagnostic columns from the source parquet so reviewers can
-    # audit "bad labels" without having to re-join. Each column is optional;
-    # only attach the ones the candidate CSV actually carries.
-    for diag_col in (
-        "original_label", "standardized_label", "visual_label",
-        "label_source", "notes", "eval_set", "random_sample", "viz_status",
-        "cnn_split_assigned", "if_split_assigned",
-    ):
-        if diag_col not in candidates.columns:
+    # Propagate every remaining candidate column generically (not an
+    # allowlist) so reviewers can audit "bad labels" without a re-join, and so
+    # any new column rachel_to_candidates.py starts carrying (e.g. a new
+    # Rachel provenance field) reaches scored_candidates.parquet automatically
+    # -- no code change needed here when the schema grows. See
+    # docs/EXPERIMENTS_LOG.md 2026-07-21.
+    _HANDLED = {"id", "label", "source", "country"}
+    for col in candidates.columns:
+        if col in _HANDLED or col in result.columns:
             continue
-        mapping = dict(zip(cid_str, candidates[diag_col]))
-        fill = 0 if diag_col in ("eval_set", "random_sample") else ""
-        result[diag_col] = result["candidate_id"].astype(str).map(mapping).fillna(fill)
+        mapping = dict(zip(cid_str, candidates[col]))
+        mapped = result["candidate_id"].astype(str).map(mapping)
+        if candidates[col].dtype == object:
+            mapped = mapped.fillna("")
+        result[col] = mapped
 
 
 def _find_patches_root(output_dir: Path) -> Path:

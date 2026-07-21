@@ -289,13 +289,16 @@ def convert(
         build_region_string(k, s) for k, s in zip(df["country_key"], df["state"])
     ]
 
-    # Keep candidate columns
-    keep = ["id", "name", "lat", "lng", "species", "category", "source",
-            "country", "state", "label", "region", "viz_status",
-            "visual_label", "label_source", "eval_set", "random_sample",
-            "cnn_split_assigned", "if_split_assigned",
-            "num_bldgs", "total_area_m2", "median_area", "template_score_if"]
-    out_df = df[[c for c in keep if c in df.columns]].copy()
+    # Keep every column except the ones that can't survive a CSV round-trip
+    # (raw WKB geometry bytes / the parsed shapely objects). This is
+    # deliberately a denylist, not an allowlist: any new column Rachel adds to
+    # her master parquet (or any new derived column added above) flows through
+    # automatically -- no code change needed here when the schema grows. See
+    # docs/EXPERIMENTS_LOG.md 2026-07-21 (original_label/standardized_label/
+    # final_label went missing for months because this used to be an
+    # allowlist that nobody remembered to update).
+    _NON_CSV_COLS = {"geometry", "geom"}
+    out_df = df[[c for c in df.columns if c not in _NON_CSV_COLS]].copy()
 
     # Save per country. Write-tmp-then-rename so a concurrently launched pod
     # reading this shared candidates_dir never sees a truncated/empty CSV

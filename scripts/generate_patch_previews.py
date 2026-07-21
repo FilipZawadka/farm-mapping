@@ -54,6 +54,10 @@ def main() -> None:
     ap.add_argument("--candidates-parquet", required=True,
                      help="all_clusters parquet -- used to validate patch coords still match")
     ap.add_argument("--jpeg-quality", type=int, default=82)
+    ap.add_argument("--skip-existing", action="store_true",
+                     help="Skip ids that already have an {id}_{hash}.jpg in --out "
+                          "(cheap incremental runs when publishing a new release that "
+                          "shares most of its candidate set with prior releases).")
     args = ap.parse_args()
 
     patches_root = Path(args.patches_root)
@@ -63,6 +67,15 @@ def main() -> None:
     wanted = set(Path(args.ids_file).read_text().splitlines())
     wanted = {w.strip() for w in wanted if w.strip()}
     print(f"requested {len(wanted)} candidate previews")
+
+    if args.skip_existing:
+        have = {p.stem.rsplit(f"_{args.imagery_hash}", 1)[0] for p in out_dir.glob(f"*_{args.imagery_hash}.jpg")}
+        before = len(wanted)
+        wanted -= have
+        print(f"--skip-existing: {before - len(wanted)} already present, {len(wanted)} left to render")
+        if not wanted:
+            print("nothing to do")
+            return
 
     meta = pd.read_csv(patches_root / "patch_meta.csv", low_memory=False)
     meta = meta[meta["imagery_config_hash"].astype(str) == args.imagery_hash]
@@ -94,7 +107,7 @@ def main() -> None:
         try:
             arr = np.load(path)
             img = to_thumbnail(arr)
-            img.save(out_dir / f"{cid}.jpg", format="JPEG", quality=args.jpeg_quality)
+            img.save(out_dir / f"{cid}_{args.imagery_hash}.jpg", format="JPEG", quality=args.jpeg_quality)
             n_ok += 1
         except Exception as exc:  # noqa: BLE001
             print(f"FAILED {cid}: {exc}")

@@ -64,6 +64,7 @@ training:
   upsample_minority_regions: true
   balanced_country_splits: true
   balanced_class_sampling: true
+  dataloader_workers: 8
   channel_subset: [B2, B3, B4, NDWI]
   crop_center_px: 64
   augmentation:

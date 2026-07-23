@@ -864,6 +864,21 @@ def build_splits(
                 before - after, before, after,
             )
 
+    # The eval / generalization / qual_eval hold-outs are EVALUATED with a
+    # CrossEntropy loss, so an unlabeled (label==-1) row would trip the CUDA
+    # `t >= 0 && t < n_classes` assert. train/val/test are stripped of -1 above;
+    # the hold-out slices need the same guard (v5 eval happened to be fully
+    # labelled, so this only surfaced once v6 added unlabeled rows to eval/qual).
+    neg = set(meta.index[meta["_label"] == -1])
+    n_before = len(eval_idx) + len(gen_idx) + len(qual_idx)
+    eval_idx = [i for i in eval_idx if i not in neg]
+    gen_idx = [i for i in gen_idx if i not in neg]
+    qual_idx = [i for i in qual_idx if i not in neg]
+    n_after = len(eval_idx) + len(gen_idx) + len(qual_idx)
+    if n_before != n_after:
+        log.info("Dropped %d unlabeled rows from eval/gen/qual_eval hold-outs (%d -> %d)",
+                 n_before - n_after, n_before, n_after)
+
     meta_clean = meta.drop(columns=["_label"])
     if "_eval" in meta_clean.columns:
         meta_clean = meta_clean.drop(columns=["_eval"])

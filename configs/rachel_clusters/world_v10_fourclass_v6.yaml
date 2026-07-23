@@ -164,7 +164,7 @@ runpod:
   - cpu3m-4-32
   auto_terminate: true
 inference:
-  checkpoint: data/output/world_v10_fourclass_softcon/best_model.pt
+  checkpoint: data/output/world_v10_fourclass_v6/best_model.pt
   threshold: 0.5
   labeled_only: true
   confidence_tiers:

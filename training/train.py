@@ -423,7 +423,7 @@ def train(cfg: PipelineConfig) -> Path:
             patches_dir = download_dir
             log.info("Using cached patches from %s", patches_dir)
 
-    train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds = build_splits(cfg, patches_dir=patches_dir)
+    train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds, qual_ds = build_splits(cfg, patches_dir=patches_dir)
     bs = cfg.training.batch_size
 
     # Use weighted sampler when upsampling minority regions
@@ -570,6 +570,24 @@ def train(cfg: PipelineConfig) -> Path:
             _write_per_country_metrics(
                 gen_ds, model, criterion, device, bs,
                 output_dir / "generalization_metrics_per_country.json",
+                cfg,
+            )
+
+        # Rachel's qualitative-eval hold-out (v6 for_analysis files). Large
+        # labelled slice, never trained on -- reported so those labels are used.
+        if qual_ds:
+            model.load_state_dict(load_checkpoint(best_path, device)["model_state_dict"])
+            qual_loader = DataLoader(qual_ds, batch_size=bs, shuffle=False, num_workers=0)
+            _, qual_metrics = _evaluate(model, qual_loader, criterion, device)
+            mlflow.log_metrics({
+                f"qual_{k}": v for k, v in qual_metrics.items() if isinstance(v, (int, float))
+            })
+            log.info("Qual-eval metrics (overall): %s", qual_metrics)
+            import json
+            (output_dir / "qual_eval_metrics.json").write_text(json.dumps(qual_metrics, indent=2))
+            _write_per_country_metrics(
+                qual_ds, model, criterion, device, bs,
+                output_dir / "qual_eval_metrics_per_country.json",
                 cfg,
             )
 

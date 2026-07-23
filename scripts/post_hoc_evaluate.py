@@ -39,7 +39,7 @@ def main() -> None:
 
     cfg = resolve_paths(load_config(args.config))
 
-    train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds = build_splits(cfg, patches_dir=None)
+    train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds, _qual_ds = build_splits(cfg, patches_dir=None)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

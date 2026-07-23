@@ -563,7 +563,8 @@ def build_splits(
     If *patches_dir* is given, use it as the patch root; else derive
     the ``patches/`` ancestor from ``cfg.patches.output_dir``.
 
-    Returns ``(train_ds, val_ds, test_ds)``.
+    Returns ``(train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds, qual_ds)``.
+    The last four may be ``None`` when their split has no rows.
     """
     output_dir = Path(cfg.patches.output_dir)
     if patches_dir is not None:
@@ -642,17 +643,27 @@ def build_splits(
         test_idx = list(meta.index[meta["_split_assigned"] == "test"])
         eval_idx = list(meta.index[meta["_split_assigned"] == "eval"])
         gen_idx = list(meta.index[meta["_split_assigned"] == "generalization"])
+        # Rachel's separate qualitative-eval hold-out (v6 for_analysis files add
+        # this value; older parquets don't have it). Like eval/generalization it
+        # is NEVER trained on -- it gets its own reported slice so those labels
+        # are used, not silently dropped.
+        qual_idx = list(meta.index[meta["_split_assigned"] == "qual_eval"])
         inspected_idx: list[int] = []
         eval_set_filter = set(eval_idx)
         gen_set_filter = set(gen_idx)
+        qual_set_filter = set(qual_idx)
         dmv_set: set[int] = set()
 
         log.info(
-            "Explicit splits (cnn_split_assigned): train=%d val=%d test=%d eval=%d generalization=%d",
-            len(train_idx), len(val_idx), len(test_idx), len(eval_idx), len(gen_idx),
+            "Explicit splits (cnn_split_assigned): train=%d val=%d test=%d eval=%d "
+            "generalization=%d qual_eval=%d",
+            len(train_idx), len(val_idx), len(test_idx), len(eval_idx), len(gen_idx), len(qual_idx),
         )
         meta.drop(columns=["_split_assigned"], inplace=True)
     else:
+        # Legacy computed-split path (no cnn_split_assigned): no qual_eval slice.
+        qual_idx: list[int] = []
+        qual_set_filter: set[int] = set()
         # Rachel's representative-sample eval set: rows flagged eval_set=True must
         # NEVER enter train/val/test/inspected. They get their own "eval" split.
         eval_idx: list[int] = []
@@ -837,6 +848,7 @@ def build_splits(
     strip_set = (
         set(eval_set_filter)
         | set(gen_set_filter)
+        | set(qual_set_filter)
         | set(meta.index[meta["_label"] == -1])
     )
     if strip_set:
@@ -879,6 +891,7 @@ def build_splits(
     for split_name, idx_list in [
         ("train", train_idx), ("val", val_idx), ("test", test_idx),
         ("inspected", inspected_idx), ("eval", eval_idx), ("generalization", gen_idx),
+        ("qual_eval", qual_idx),
     ]:
         if not idx_list:
             continue
@@ -910,6 +923,9 @@ def build_splits(
     if gen_idx:
         # generalization overrides any prior assignment -- absolute OOD hold-out.
         split_col.iloc[gen_idx] = "generalization"
+    if qual_idx:
+        # Rachel's qualitative-eval hold-out -- reported, never trained on.
+        split_col.iloc[qual_idx] = "qual_eval"
     splits_df = meta_clean[["candidate_id"]].copy()
     splits_df["split"] = split_col
     splits_dir = patches_root / "splits"
@@ -953,6 +969,10 @@ def build_splits(
     if gen_idx:
         gen_ds = PatchDataset(meta_clean.iloc[gen_idx], candidates, patches_root, augment=False, **ds_kwargs)
 
+    qual_ds = None
+    if qual_idx:
+        qual_ds = PatchDataset(meta_clean.iloc[qual_idx], candidates, patches_root, augment=False, **ds_kwargs)
+
     # Compute per-sample weights for region and/or class upsampling.
     # When both are enabled, weights multiply: each sample's draw probability
     # is proportional to (1/n_country) * (1/n_class), giving roughly equal
@@ -971,7 +991,7 @@ def build_splits(
         ))
         log.info("Per-channel norm stats (n_train sample): mean=%s std=%s -> %s",
                  np.round(mean, 4).tolist(), np.round(std, 4).tolist(), stats_path)
-        for ds in (train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds):
+        for ds in (train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds, qual_ds):
             if ds is not None:
                 ds.norm_stats = (mean, std)
 
@@ -992,7 +1012,7 @@ def build_splits(
     elif class_w is not None:
         train_ds.sample_weights = class_w
 
-    return train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds
+    return train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds, qual_ds
 
 
 def _compute_norm_stats(

@@ -68,7 +68,7 @@ def main() -> None:
     cfg = resolve_paths(load_config(args.config))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds = build_splits(cfg)
+    train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds, _qual_ds = build_splits(cfg)
     if gen_ds is None or len(gen_ds) == 0:
         raise SystemExit("No generalization split — set data.generalization_countries")
 

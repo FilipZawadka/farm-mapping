@@ -147,6 +147,13 @@ class DataConfig(BaseModel):
     label_mode: str = "binary"
     # Drop rows with these modified_label values entirely
     exclude_labels: list[str] = Field(default_factory=list)
+    # Keep rows whose label has no slot in the active taxonomy ("Ambiguous",
+    # and the Mixed/Other/Unknown/PigsOrPoultry farm types that three_class and
+    # four_class drop) instead of removing them. They become label=-1, so they
+    # are never trained on -- but they DO get scored by an inference run with
+    # include_unlabeled + inference.labeled_only=false. Default False keeps the
+    # training-time row set byte-identical to every published model.
+    keep_unscorable_labels: bool = False
     # Drop rows where original_label contains "OSM" and row appears to be a farm
     exclude_osm_farms: bool = False
     osm_farm_cache_dir: str = "data/cache/osm_farm_finder"
@@ -198,6 +205,12 @@ class PatchConfig(BaseModel):
         default_factory=lambda: ["2023-01-01", "2023-12-31"]
     )
     max_cloud_cover: int = 15
+    # Per-pixel cloud masking applied before compositing. "scl" masks pixels
+    # whose Scene Classification Layer is cloud shadow (3), cloud medium/high
+    # probability (8, 9) or cirrus (10). "none" keeps the legacy behaviour
+    # (scene-level CLOUDY_PIXEL_PERCENTAGE filter only). Changing this changes
+    # the imagery_config_hash, i.e. triggers re-extraction.
+    cloud_mask: Literal["none", "scl"] = "none"
     output_dir: str = "data/patches"
     num_workers: int = 4
     retry_failed: bool = False
@@ -258,9 +271,86 @@ def imagery_config_hash(patch_cfg: PatchConfig) -> str:
         payload["indices"] = patch_cfg.indices
         payload["composite"] = patch_cfg.composite
         payload["max_cloud_cover"] = patch_cfg.max_cloud_cover
+    # Only hash cloud_mask when enabled so pre-existing patch stores
+    # (extracted before the field existed) keep their hashes.
+    if getattr(patch_cfg, "cloud_mask", "none") != "none":
+        payload["cloud_mask"] = patch_cfg.cloud_mask
     payload["date_range"] = patch_cfg.date_range
     canonical = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+# Max distance between a stored patch's extraction coords and the candidate's
+# current coords before the patch is considered stale. Cluster ids are NOT
+# stable across Rachel's merge re-runs (06-23 renumbered 93.5% of ids; see
+# docs/EXPERIMENTS_LOG.md 2026-07-20), so an id-keyed patch can silently point
+# at a different physical cluster. 250 m tolerates centroid drift from minor
+# cluster-membership edits while catching real reassignment (median ~100s km).
+MAX_PATCH_COORD_DRIFT_M = 250.0
+
+
+def haversine_m(lat1, lng1, lat2, lng2):
+    """Vectorized great-circle distance in metres (accepts scalars or arrays)."""
+    import numpy as np
+
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    a = np.sin((p2 - p1) / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(
+        np.radians(np.asarray(lng2) - np.asarray(lng1)) / 2
+    ) ** 2
+    return 2 * 6371000.0 * np.arcsin(np.sqrt(a))
+
+
+def validate_patch_locations(
+    meta,
+    candidates,
+    max_drift_m: float = MAX_PATCH_COORD_DRIFT_M,
+    context: str = "",
+    max_stale_frac: float | None = 0.05,
+):
+    """Return *meta* rows whose stored extraction coords match the candidate's
+    current coords, deduped to one row per candidate_id (keep last = newest
+    extraction wins over superseded ones in the append-only patch_meta.csv).
+
+    Rows with drift > *max_drift_m* (or with no lat/lng) are dropped with a
+    warning. If more than *max_stale_frac* of matched rows are stale, raise --
+    that means the store needs re-extraction (run the patch_extraction step),
+    not silent training on a shrunken sample. Pass ``max_stale_frac=None`` to
+    only warn (used by patch_extraction itself, which fixes stale rows).
+    """
+    import logging
+
+    import numpy as np
+
+    log = logging.getLogger(__name__)
+    meta = meta.drop_duplicates(subset="candidate_id", keep="last")
+    if not {"lat", "lng"}.issubset(meta.columns):
+        log.warning("%s: patch_meta has no lat/lng columns -- cannot validate patch locations", context)
+        return meta.reset_index(drop=True)
+    ids = candidates["id"].astype(str).values
+    pos_lat = dict(zip(ids, candidates["lat"].values))
+    pos_lng = dict(zip(ids, candidates["lng"].values))
+    cid = meta["candidate_id"].astype(str)
+    cand_lat = cid.map(pos_lat).values.astype(float)
+    cand_lng = cid.map(pos_lng).values.astype(float)
+    drift = haversine_m(meta["lat"].values.astype(float), meta["lng"].values.astype(float), cand_lat, cand_lng)
+    # NaN drift (missing coords on either side) counts as stale: unverifiable.
+    ok = np.asarray(drift <= max_drift_m)
+    n_stale = int((~ok).sum())
+    if n_stale:
+        frac = n_stale / max(len(meta), 1)
+        log.warning(
+            "%s: dropping %d/%d patches whose stored location is >%.0f m from the "
+            "candidate's current position (stale cluster_id mapping)",
+            context, n_stale, len(meta), max_drift_m,
+        )
+        if max_stale_frac is not None and frac > max_stale_frac:
+            raise RuntimeError(
+                f"{context}: {n_stale}/{len(meta)} ({frac:.1%}) patches are stale "
+                f"(extracted >{max_drift_m:.0f} m from the candidate's current location). "
+                "The patch store is out of sync with the candidates -- re-run the "
+                "patch_extraction step to re-extract them before training/inference."
+            )
+    return meta[ok].reset_index(drop=True)
 
 
 def imagery_metadata(patch_cfg: PatchConfig, band_names: list[str]) -> dict[str, str]:
@@ -294,6 +384,15 @@ class ModelConfig(BaseModel):
     class_names: Optional[list[str]] = None
     # Optional: hex colors for each class index for the prediction map.
     class_colors: Optional[list[str]] = None
+    # Band order the pretrained checkpoint's first conv expects (torchgeo
+    # weights only), e.g. SSL4EO-S12 13-band order
+    # [B1,B2,B3,B4,B5,B6,B7,B8,B8A,B9,B10,B11,B12]. When set together with
+    # in_channel_names, the first conv is built by SELECTING the matching
+    # pretrained channel slices instead of copying the first k channels.
+    pretrained_band_order: Optional[list[str]] = None
+    # Names of the model's actual input channels in order (set programmatically
+    # by train.py/inference.py from channel_subset or bands+indices).
+    in_channel_names: Optional[list[str]] = None
 
 
 class AugFlipConfig(BaseModel):
@@ -391,6 +490,24 @@ class TrainingConfig(BaseModel):
     mixed_precision: bool = True
     # Class weights [neg, pos] to penalize false positives when model predicts all positive
     class_weight: Optional[list[float]] = None
+    # Loss function. "focal" adds (1-p)^gamma modulation to CE (uses class_weight
+    # as per-class alpha when set). "logit_adjusted" subtracts
+    # tau*log(class_prior) from the logits at train time (Menon et al. 2021) —
+    # a principled alternative to class weights for long-tailed labels.
+    loss: Literal["cross_entropy", "focal", "logit_adjusted"] = "cross_entropy"
+    focal_gamma: float = 2.0
+    logit_adjust_tau: float = 1.0
+    # Metric for best-checkpoint selection + early stopping. "val_loss"
+    # (legacy) minimises weighted CE; "val_f1" maximises macro-F1 — more
+    # robust for imbalanced multi-class runs.
+    checkpoint_metric: Literal["val_loss", "val_f1"] = "val_loss"
+    # Per-channel standardisation. "per_channel" computes mean/std over a
+    # sample of TRAIN patches (after 0-1 scaling, channel subset and crop),
+    # persists them next to the split CSV, and applies (x-mean)/std in the
+    # dataset; inference reads the same stats file. "none" = legacy scaling only.
+    normalization: Literal["none", "per_channel"] = "none"
+    # DataLoader workers for the train loader (0 = main process, legacy).
+    dataloader_workers: int = 0
     # Upsample minority regions so each country contributes equally per epoch
     upsample_minority_regions: bool = False
     balanced_country_splits: bool = False
@@ -413,6 +530,10 @@ class TrainingConfig(BaseModel):
     # Set to False to warm-start from weights only — useful for fine-tuning with
     # different hyperparameters (new LR, new schedule).
     resume_optimizer_state: bool = True
+    # When resuming, restart the epoch counter at 1 instead of prior_epoch+1.
+    # Use for stage-2 recipes (e.g. cRT classifier retraining) where the
+    # checkpoint is a warm start, not a continuation.
+    resume_reset_epoch: bool = False
 
 
 class MLflowConfig(BaseModel):
@@ -481,6 +602,27 @@ class InferenceConfig(BaseModel):
     # ~8x faster; the world map lacks UP/UN points but every metric slice is
     # unchanged. Override on the CLI via `--labeled-only`.
     labeled_only: bool = False
+    # Test-time augmentation: average softmax probabilities over the 8
+    # dihedral transforms (4 rotations x 2 flips). ~8x slower inference.
+    tta: bool = False
+    # Inference-time DataLoader tuning. Scoring is forward-only (no gradients,
+    # no optimizer state) so it fits a much larger batch than training and
+    # benefits from parallel patch loading -- the loader, not the GPU, is the
+    # bottleneck on big scoring jobs. None => fall back to the training values.
+    # Neither affects results: shuffle=False and the model is in eval().
+    batch_size: Optional[int] = None
+    num_workers: Optional[int] = None
+    # Load per-channel norm stats (and split assignments) from ANOTHER config's
+    # stem. Those files are keyed by config filename and only written at train
+    # time, so an inference-only config -- e.g. a scoring shard -- would
+    # otherwise fail to find them. Point this at the config that trained the
+    # checkpoint being scored with.
+    norm_stats_stem: Optional[str] = None
+    # Autocast the forward pass to fp16 on CUDA. Materially faster on large
+    # jobs, but it perturbs probabilities at ~1e-3, which can flip argmax on
+    # near-ties -- so it defaults OFF to keep re-exports bit-comparable with
+    # already-published releases. Opt in per-config for throughput-bound runs.
+    mixed_precision: bool = False
 
 
 class VizConfig(BaseModel):

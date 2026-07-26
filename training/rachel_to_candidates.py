@@ -69,6 +69,7 @@ def convert(
     exclude_labels: list[str] | None = None,
     exclude_osm_farms: bool = False,
     inspected_only: bool = False,
+    keep_unscorable_labels: bool = False,
 ) -> pd.DataFrame:
     """Convert parquet to candidate CSVs.
 
@@ -81,6 +82,16 @@ def convert(
         exclude_osm_farms: If True, drop rows where original_label contains "OSM"
             and the row is tagged as a farm (via standardized_label or OSM farm tags).
         inspected_only: If True, keep only rows with viz_status == "inspected".
+        keep_unscorable_labels: If True, KEEP rows whose label has no slot in the
+            active taxonomy instead of dropping them: "Ambiguous" (dropped
+            unconditionally by every mode) and the ambiguous farm types that
+            three_class/four_class drop (Mixed/Other/Unknown/PigsOrPoultry).
+            They fall through the label maps to ``label = -1`` (the unlabeled
+            sentinel), so they never contaminate training -- but they DO reach
+            the candidate CSVs, which is what an inference-only "score
+            everything we have" run needs. Their real label text still rides
+            along in original_label/standardized_label/final_label.
+            Default False preserves the exact training-time row set.
 
     Returns the full DataFrame for inspection.
     """
@@ -103,8 +114,11 @@ def convert(
         df = df[df["viz_status"] == "inspected"].copy()
         log.info("Inspected only: %d -> %d", before, len(df))
 
-    # Exclude ambiguous
-    df = df[df[label_col] != "Ambiguous"].copy() if label_col in df.columns else df.copy()
+    # Exclude ambiguous (kept, as label=-1, when scoring everything)
+    if label_col in df.columns and not keep_unscorable_labels:
+        df = df[df[label_col] != "Ambiguous"].copy()
+    else:
+        df = df.copy()
 
     # Exclude specific labels
     if exclude_labels:
@@ -155,11 +169,18 @@ def convert(
         _DROP_3 = {"Farm: Mixed", "Farm: Other", "Farm: Unknown",
                    "Farm: PigsOrPoultry"}
         before = len(df)
-        df = df[~df[label_col].isin(_DROP_3)].copy()
-        log.info(
-            "three_class: dropped %d ambiguous farm samples (%d -> %d)",
-            before - len(df), before, len(df),
-        )
+        if not keep_unscorable_labels:
+            df = df[~df[label_col].isin(_DROP_3)].copy()
+            log.info(
+                "three_class: dropped %d ambiguous farm samples (%d -> %d)",
+                before - len(df), before, len(df),
+            )
+        else:
+            n_kept = int(df[label_col].isin(_DROP_3).sum())
+            log.info(
+                "three_class: keep_unscorable_labels -- keeping %d ambiguous farm "
+                "samples as label=-1 (scored, never trained on)", n_kept,
+            )
         _MAP_3 = {
             "NotFarm": 0,
             "Farm: Poultry: Meat Chickens": 1,
@@ -176,6 +197,45 @@ def convert(
         counts = df["label"].value_counts().sort_index()
         log.info(
             "three_class labels (0=NotFarm 1=Poultry 2=OtherFarm): %s",
+            {int(k): int(v) for k, v in counts.items()},
+        )
+    elif label_mode == "four_class":
+        # 4-class: NotFarm / Poultry / Pigs / Cattle.
+        # Same ambiguous-drop policy as three_class; the only change is that
+        # Pigs and Cattle become separate classes instead of a merged
+        # "OtherFarm" (whose train mix is ~10:1 pigs:cattle -- see
+        # notebooks/rachel_v10_splits_analysis_2026-07-14.ipynb).
+        _DROP_4 = {"Farm: Mixed", "Farm: Other", "Farm: Unknown",
+                   "Farm: PigsOrPoultry"}
+        before = len(df)
+        if not keep_unscorable_labels:
+            df = df[~df[label_col].isin(_DROP_4)].copy()
+            log.info(
+                "four_class: dropped %d ambiguous farm samples (%d -> %d)",
+                before - len(df), before, len(df),
+            )
+        else:
+            n_kept = int(df[label_col].isin(_DROP_4).sum())
+            log.info(
+                "four_class: keep_unscorable_labels -- keeping %d ambiguous farm "
+                "samples as label=-1 (scored, never trained on)", n_kept,
+            )
+        _MAP_4 = {
+            "NotFarm": 0,
+            "Farm: Poultry: Meat Chickens": 1,
+            "Farm: Poultry: Eggs": 1,
+            "Farm: Poultry: Unspecified/Other": 1,
+            "Farm: Pigs": 2,
+            "Farm: Cattle": 3,
+        }
+        def _to_label(x):
+            if pd.isna(x):
+                return -1
+            return _MAP_4.get(x, -1)
+        df["label"] = df[label_col].apply(_to_label)
+        counts = df["label"].value_counts().sort_index()
+        log.info(
+            "four_class labels (0=NotFarm 1=Poultry 2=Pigs 3=Cattle): %s",
             {int(k): int(v) for k, v in counts.items()},
         )
     elif label_mode == "multiclass":
@@ -233,6 +293,15 @@ def convert(
     if "random_sample" in df.columns:
         df["random_sample"] = df["random_sample"].fillna(False).astype(bool).astype(int)
 
+    # Rachel's explicit train/val/test/eval/generalization assignment (v10 rebuild).
+    # When present, this is the single source of truth for split membership --
+    # see training/dataset.py build_splits(). Absent/NaN (e.g. rest-of-world
+    # countries, or older parquets) falls through to "unlabeled" downstream.
+    if "cnn_split_assigned" in df.columns:
+        df["cnn_split_assigned"] = df["cnn_split_assigned"].fillna("")
+    if "if_split_assigned" in df.columns:
+        df["if_split_assigned"] = df["if_split_assigned"].fillna("")
+
     # Infer US states from coordinates
     us_mask = df["country_key"] == "united_states"
     df["state"] = ""
@@ -248,24 +317,34 @@ def convert(
         build_region_string(k, s) for k, s in zip(df["country_key"], df["state"])
     ]
 
-    # Keep candidate columns
-    keep = ["id", "name", "lat", "lng", "species", "category", "source",
-            "country", "state", "label", "region", "viz_status",
-            "visual_label", "label_source", "eval_set", "random_sample",
-            "num_bldgs", "total_area_m2", "median_area", "template_score_if"]
-    out_df = df[[c for c in keep if c in df.columns]].copy()
+    # Keep every column except the ones that can't survive a CSV round-trip
+    # (raw WKB geometry bytes / the parsed shapely objects). This is
+    # deliberately a denylist, not an allowlist: any new column Rachel adds to
+    # her master parquet (or any new derived column added above) flows through
+    # automatically -- no code change needed here when the schema grows. See
+    # docs/EXPERIMENTS_LOG.md 2026-07-21 (original_label/standardized_label/
+    # final_label went missing for months because this used to be an
+    # allowlist that nobody remembered to update).
+    _NON_CSV_COLS = {"geometry", "geom"}
+    out_df = df[[c for c in df.columns if c not in _NON_CSV_COLS]].copy()
 
-    # Save per country
+    # Save per country. Write-tmp-then-rename so a concurrently launched pod
+    # reading this shared candidates_dir never sees a truncated/empty CSV
+    # (a mid-write read crashed a parallel run's patch_extraction on
+    # 2026-07-14: pandas EmptyDataError on a half-written country file).
     for country_key, grp in out_df.groupby(df["country_key"]):
         path = candidates_dir / f"{country_key}.csv"
-        grp.to_csv(path, index=False)
+        tmp = path.with_suffix(".csv.tmp")
+        grp.to_csv(tmp, index=False)
+        tmp.replace(path)
         n_pos = (grp["label"] == 1).sum()
         n_neg = (grp["label"] == 0).sum()
         n_unk = (grp["label"] == -1).sum()
         n_eval = int(grp["eval_set"].sum()) if "eval_set" in grp.columns else 0
+        n_explicit = int((grp["cnn_split_assigned"] != "").sum()) if "cnn_split_assigned" in grp.columns else 0
         log.info(
-            "Saved %d candidates to %s (pos=%d, neg=%d, unlabeled=%d, eval_set=%d)",
-            len(grp), path, n_pos, n_neg, n_unk, n_eval,
+            "Saved %d candidates to %s (pos=%d, neg=%d, unlabeled=%d, eval_set=%d, cnn_split_assigned=%d)",
+            len(grp), path, n_pos, n_neg, n_unk, n_eval, n_explicit,
         )
 
     log.info("Done. Total: %d candidates", len(out_df))

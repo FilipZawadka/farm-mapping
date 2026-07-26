@@ -17,7 +17,13 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from .config import PipelineConfig, imagery_config_hash, matches_any_region, build_country_key_map
+from .config import (
+    PipelineConfig,
+    imagery_config_hash,
+    matches_any_region,
+    build_country_key_map,
+    validate_patch_locations,
+)
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +102,7 @@ class PatchDataset(Dataset):
         n_spectral_bands: int = 6,
         channel_indices: list[int] | None = None,
         crop_size: int | None = None,
+        norm_stats: "tuple[np.ndarray, np.ndarray] | None" = None,
     ):
         self.meta = meta.reset_index(drop=True)
         self.patches_dir = Path(patches_dir)
@@ -105,6 +112,9 @@ class PatchDataset(Dataset):
         self.n_spectral_bands = n_spectral_bands
         self.channel_indices = channel_indices
         self.crop_size = crop_size
+        # (mean, std) arrays over the FINAL channel layout (post channel_subset);
+        # applied as (x - mean) / std after scaling/augment/crop/subset.
+        self.norm_stats = norm_stats
 
         label_map = dict(zip(
             candidates["id"].astype(str),
@@ -148,6 +158,10 @@ class PatchDataset(Dataset):
         # Select channel subset (after scaling + augmentation)
         if self.channel_indices is not None:
             arr = arr[self.channel_indices].copy()
+
+        if self.norm_stats is not None:
+            mean, std = self.norm_stats
+            arr = (arr - mean[:, None, None]) / std[:, None, None]
 
         tensor = torch.from_numpy(arr)
         label = int(self.labels[idx])
@@ -402,37 +416,55 @@ def _region_split_indices(
 # Random stratified splitting (original behaviour)
 # ---------------------------------------------------------------------------
 
+def _stratified_class_split(
+    labels: np.ndarray,
+    test_frac: float,
+    val_frac: float,
+    rng: np.random.Generator,
+) -> tuple[list[int], list[int], list[int]]:
+    """Split positions 0..len(labels)-1 into train/val/test stratified by class.
+
+    Works for ANY number of classes (the previous pos/neg-only logic silently
+    dropped every label >= 2 — e.g. all OtherFarm rows in three_class runs).
+    Rows with label < 0 are excluded entirely (unlabeled).
+    """
+    train: list[int] = []
+    val: list[int] = []
+    test: list[int] = []
+    for cls in np.unique(labels):
+        if cls < 0:
+            continue
+        cls_idx = np.flatnonzero(labels == cls).tolist()
+        rng.shuffle(cls_idx)
+        n = len(cls_idx)
+        n_te = int(n * test_frac)
+        n_va = int(n * val_frac)
+        test.extend(cls_idx[:n_te])
+        val.extend(cls_idx[n_te:n_te + n_va])
+        train.extend(cls_idx[n_te + n_va:])
+    rng.shuffle(train)
+    rng.shuffle(val)
+    rng.shuffle(test)
+    return train, val, test
+
+
 def _random_split_indices(
     meta: pd.DataFrame,
     cfg: PipelineConfig,
     rng: np.random.Generator,
     label_col: str = "_label",
 ) -> tuple[list[int], list[int], list[int]]:
-    pos_idx = meta.index[meta[label_col] == 1].tolist()
-    neg_idx = meta.index[meta[label_col] == 0].tolist()
-    rng.shuffle(pos_idx)
-    rng.shuffle(neg_idx)
-
-    def _split(indices: list[int]) -> tuple[list, list, list]:
-        n = len(indices)
-        n_test = max(1, int(n * cfg.training.test_split))
-        n_val = max(1, int(n * cfg.training.val_split))
-        return (
-            indices[n_test + n_val:],
-            indices[n_test: n_test + n_val],
-            indices[:n_test],
-        )
-
-    pt, pv, pe = _split(pos_idx)
-    nt, nv, ne = _split(neg_idx)
-
-    train_idx = pt + nt
-    val_idx = pv + nv
-    test_idx = pe + ne
-    rng.shuffle(train_idx)
-    rng.shuffle(val_idx)
-    rng.shuffle(test_idx)
-    return train_idx, val_idx, test_idx
+    """Class-stratified random split. Returns lists of meta index labels."""
+    index_labels = meta.index.to_numpy()
+    labels = meta[label_col].to_numpy()
+    tr, va, te = _stratified_class_split(
+        labels, cfg.training.test_split, cfg.training.val_split, rng,
+    )
+    return (
+        index_labels[tr].tolist(),
+        index_labels[va].tolist(),
+        index_labels[te].tolist(),
+    )
 
 
 def _country_balanced_split_indices(
@@ -531,7 +563,8 @@ def build_splits(
     If *patches_dir* is given, use it as the patch root; else derive
     the ``patches/`` ancestor from ``cfg.patches.output_dir``.
 
-    Returns ``(train_ds, val_ds, test_ds)``.
+    Returns ``(train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds, qual_ds)``.
+    The last four may be ``None`` when their split has no rows.
     """
     output_dir = Path(cfg.patches.output_dir)
     if patches_dir is not None:
@@ -582,181 +615,217 @@ def build_splits(
     meta = meta[meta["candidate_id"].astype(str).isin(valid_ids)].reset_index(drop=True)
     log.info("Filtered to %d patches matching config candidates", len(meta))
 
+    # Refuse patches whose stored extraction coords no longer match the
+    # candidate's current coords (stale cluster_id mapping after a merge
+    # re-run renumbered ids). Raises if >5% are stale -- re-run extraction.
+    meta = validate_patch_locations(meta, candidates, context="build_splits")
+
     meta["_label"] = meta["candidate_id"].astype(str).map(label_map).astype(int)
 
-    # Rachel's representative-sample eval set: rows flagged eval_set=True must
-    # NEVER enter train/val/test/inspected. They get their own "eval" split.
-    eval_idx: list[int] = []
-    if "eval_set" in candidates.columns:
-        eval_map = dict(zip(
+    # Rachel's v10 explicit split assignment (cnn_split_assigned: train/val/
+    # test/eval/generalization/predict) is the single source of truth when
+    # present -- it already encodes eval_set, generalization-country routing,
+    # training-country whitelisting, and DMV distribution, so none of the RNG-
+    # based carve-out logic below runs. Absent column (older parquet_source,
+    # e.g. all_clusters_v4.parquet and earlier) falls through to the legacy
+    # computed-split path unchanged.
+    has_explicit_splits = "cnn_split_assigned" in candidates.columns
+
+    if has_explicit_splits:
+        split_map = dict(zip(
             candidates["id"].astype(str),
-            candidates["eval_set"].fillna(0).astype(int),
+            candidates["cnn_split_assigned"].fillna("").astype(str),
         ))
-        meta["_eval"] = meta["candidate_id"].astype(str).map(eval_map).fillna(0).astype(int)
-        eval_idx = list(meta.index[meta["_eval"] == 1])
-        if eval_idx:
-            log.info("eval_set hold-out: %d candidates (excluded from train/val/test/inspected)", len(eval_idx))
-    eval_set_filter = set(eval_idx)
+        meta["_split_assigned"] = meta["candidate_id"].astype(str).map(split_map).fillna("")
 
-    # Generalization-testing countries: any labelled candidate whose ADM0 is
-    # in cfg.data.generalization_countries is forced into a "generalization"
-    # split. Never enters train/val/test/eval/inspected. See
-    # docs/EVAL_FRAMEWORK.md.
-    gen_idx: list[int] = []
-    gen_iso = {iso.upper() for iso in (getattr(cfg.data, "generalization_countries", []) or [])}
-    if gen_iso:
-        # Candidate IDs follow the `{ADM0}_cluster_{n}` convention from
-        # rachel_to_candidates.py, so the prefix before the first underscore
-        # is the ADM0 ISO code.
-        meta_iso = (
-            meta["candidate_id"].astype(str)
-            .str.split("_", n=1, expand=True)[0].str.upper()
-        )
-        gen_mask = meta_iso.isin(gen_iso) & (meta["_label"] != -1)
-        gen_idx = list(meta.index[gen_mask])
-        if gen_idx:
-            log.info(
-                "generalization hold-out: %d candidates from %s "
-                "(excluded from train/val/test/eval/inspected)",
-                len(gen_idx), sorted(gen_iso),
-            )
-    gen_set_filter = set(gen_idx)
-
-    # Generalization takes priority over eval_set: any candidate that is
-    # both eval_set=True AND in a generalization country goes to the
-    # generalization split, not eval. Otherwise eval_ds would be
-    # contaminated with OOD rows (Rachel's representative sample is only
-    # meaningful inside the training countries).
-    if gen_set_filter and eval_idx:
-        before = len(eval_idx)
-        eval_idx = [i for i in eval_idx if i not in gen_set_filter]
+        train_idx = list(meta.index[meta["_split_assigned"] == "train"])
+        val_idx = list(meta.index[meta["_split_assigned"] == "val"])
+        test_idx = list(meta.index[meta["_split_assigned"] == "test"])
+        eval_idx = list(meta.index[meta["_split_assigned"] == "eval"])
+        gen_idx = list(meta.index[meta["_split_assigned"] == "generalization"])
+        # Rachel's separate qualitative-eval hold-out (v6 for_analysis files add
+        # this value; older parquets don't have it). Like eval/generalization it
+        # is NEVER trained on -- it gets its own reported slice so those labels
+        # are used, not silently dropped.
+        qual_idx = list(meta.index[meta["_split_assigned"] == "qual_eval"])
+        inspected_idx: list[int] = []
         eval_set_filter = set(eval_idx)
-        if before != len(eval_idx):
-            log.info(
-                "eval_set ∩ generalization: %d rows reassigned to generalization",
-                before - len(eval_idx),
-            )
+        gen_set_filter = set(gen_idx)
+        qual_set_filter = set(qual_idx)
+        dmv_set: set[int] = set()
 
-    rng = np.random.default_rng(cfg.training.seed)
-
-    # Pool of rows eligible for train/val/test: labeled (_label != -1) and not
-    # in the eval_set hold-out. Restricting the splitter inputs to this pool
-    # keeps unlabeled rows (carried by include_unlabeled=true) from claiming
-    # val/test slots in country-balanced splits.
-    labeled_pool_mask = (meta["_label"] != -1)
-    if eval_set_filter:
-        labeled_pool_mask = labeled_pool_mask & ~meta.index.isin(eval_set_filter)
-    if gen_set_filter:
-        labeled_pool_mask = labeled_pool_mask & ~meta.index.isin(gen_set_filter)
-
-    # Strict whitelist: when cfg.data.training_countries is set, any labelled
-    # row whose ADM0 is NOT in (training_countries ∪ generalization_countries)
-    # is removed from the labeled pool -- it will end up in the "unlabeled"
-    # split. This enforces Rachel's framework (see docs/EVAL_FRAMEWORK.md):
-    # only the named training countries contribute to train/val/test/inspected.
-    train_iso = {iso.upper() for iso in (getattr(cfg.data, "training_countries", []) or [])}
-    if train_iso:
-        allowed = train_iso | gen_iso  # gen rows are already routed elsewhere
-        meta_iso_all = (
-            meta["candidate_id"].astype(str)
-            .str.split("_", n=1, expand=True)[0].str.upper()
+        log.info(
+            "Explicit splits (cnn_split_assigned): train=%d val=%d test=%d eval=%d "
+            "generalization=%d qual_eval=%d",
+            len(train_idx), len(val_idx), len(test_idx), len(eval_idx), len(gen_idx), len(qual_idx),
         )
-        non_allowed_mask = labeled_pool_mask & ~meta_iso_all.isin(allowed)
-        n_demoted = int(non_allowed_mask.sum())
-        if n_demoted:
-            log.info(
-                "training-country whitelist: demoting %d labelled rows outside %s "
-                "to the unlabeled split",
-                n_demoted, sorted(train_iso),
-            )
-            labeled_pool_mask = labeled_pool_mask & ~non_allowed_mask
-            meta.loc[non_allowed_mask, "_label"] = -1
-
-    # DMV protection: Rachel reserves rows whose label_source contains "DMV"
-    # for IF fitting. To prevent val/test from being inflated by this easy
-    # clean subset, force DMV rows into the train split. Their labels stay
-    # available for training (CNN train ≡ IF fit) but they never enter the
-    # holdout slices.
-    dmv_idx: list[int] = []
-    if getattr(cfg.data, "dmv_force_to_train_only", False) and "label_source" in candidates.columns:
-        ls_map = dict(zip(candidates["id"].astype(str), candidates["label_source"].fillna("")))
-        dmv_mask = (
-            meta["candidate_id"].astype(str).map(ls_map).fillna("")
-            .astype(str).str.contains("DMV", case=False, na=False)
-        )
-        dmv_idx = list(meta.index[dmv_mask & labeled_pool_mask])
-        if dmv_idx:
-            log.info("DMV protection: %d rows pinned to train", len(dmv_idx))
-    dmv_set = set(dmv_idx)
-
-    labeled_meta = meta[labeled_pool_mask]
-
-    # If inspected_as_test, hold out inspected candidates as a separate eval set
-    inspected_as_test = getattr(cfg.data, "inspected_as_test", False)
-    inspected_idx: list[int] = []
-    if inspected_as_test and "viz_status" in candidates.columns:
-        viz_map = dict(zip(candidates["id"].astype(str), candidates["viz_status"].fillna("")))
-        meta["_viz_status"] = meta["candidate_id"].astype(str).map(viz_map).fillna("")
-        # Only count LABELED rows as "inspected" so the metric is meaningful;
-        # unlabeled inspected rows fall through to the "unlabeled" split.
-        inspected_mask = (meta["_viz_status"] == "inspected") & labeled_pool_mask
-        inspected_idx = list(meta.index[inspected_mask])
-        remaining_idx = list(meta.index[labeled_pool_mask & ~inspected_mask])
-        n_inspected = len(inspected_idx)
-        log.info("Inspected hold-out: %d candidates (excluded from train/val/test)", n_inspected)
-
-        # Split remaining into train/val/test
-        balanced = getattr(cfg.training, "balanced_country_splits", False)
-        if balanced:
-            # Build a temporary meta with remaining indices for country-balanced splitting
-            remaining_meta = meta.iloc[remaining_idx].copy()
-            remaining_meta.index = range(len(remaining_meta))
-            tr_local, va_local, te_local = _country_balanced_split_indices(
-                remaining_meta, candidates, cfg, rng,
-            )
-            train_idx = [remaining_idx[i] for i in tr_local]
-            val_idx = [remaining_idx[i] for i in va_local]
-            test_idx = [remaining_idx[i] for i in te_local]
-        else:
-            remaining_meta = meta.iloc[remaining_idx].reset_index(drop=True)
-            remaining_labels = remaining_meta["_label"].values
-            pos_idx = [i for i, l in enumerate(remaining_labels) if l == 1]
-            neg_idx = [i for i, l in enumerate(remaining_labels) if l == 0]
-            rng.shuffle(pos_idx)
-            rng.shuffle(neg_idx)
-            n_pte = int(len(pos_idx) * cfg.training.test_split)
-            n_nte = int(len(neg_idx) * cfg.training.test_split)
-            n_pv = int(len(pos_idx) * cfg.training.val_split)
-            n_nv = int(len(neg_idx) * cfg.training.val_split)
-            test_local = pos_idx[:n_pte] + neg_idx[:n_nte]
-            val_local = pos_idx[n_pte:n_pte + n_pv] + neg_idx[n_nte:n_nte + n_nv]
-            train_local = pos_idx[n_pte + n_pv:] + neg_idx[n_nte + n_nv:]
-            rng.shuffle(test_local)
-            rng.shuffle(val_local)
-            rng.shuffle(train_local)
-            train_idx = [remaining_idx[i] for i in train_local]
-            val_idx = [remaining_idx[i] for i in val_local]
-            test_idx = [remaining_idx[i] for i in test_local]
-        meta.drop(columns=["_viz_status"], inplace=True)
-    elif bool(cfg.data.train_regions):
-        train_idx, val_idx, test_idx = _region_split_indices(
-            labeled_meta, candidates, cfg, rng,
-        )
-    elif getattr(cfg.training, "balanced_country_splits", False):
-        # Re-index to 0..N-1 so the splitter's positional logic is correct;
-        # then map back to original meta indices.
-        lm = labeled_meta.copy(); lm.index = range(len(lm))
-        labeled_orig = labeled_meta.index.tolist()
-        tr_local, va_local, te_local = _country_balanced_split_indices(
-            lm, candidates, cfg, rng,
-        )
-        train_idx = [labeled_orig[i] for i in tr_local]
-        val_idx = [labeled_orig[i] for i in va_local]
-        test_idx = [labeled_orig[i] for i in te_local]
+        meta.drop(columns=["_split_assigned"], inplace=True)
     else:
-        train_idx, val_idx, test_idx = _random_split_indices(
-            labeled_meta, cfg, rng,
-        )
+        # Legacy computed-split path (no cnn_split_assigned): no qual_eval slice.
+        qual_idx: list[int] = []
+        qual_set_filter: set[int] = set()
+        # Rachel's representative-sample eval set: rows flagged eval_set=True must
+        # NEVER enter train/val/test/inspected. They get their own "eval" split.
+        eval_idx: list[int] = []
+        if "eval_set" in candidates.columns:
+            eval_map = dict(zip(
+                candidates["id"].astype(str),
+                candidates["eval_set"].fillna(0).astype(int),
+            ))
+            meta["_eval"] = meta["candidate_id"].astype(str).map(eval_map).fillna(0).astype(int)
+            eval_idx = list(meta.index[meta["_eval"] == 1])
+            if eval_idx:
+                log.info("eval_set hold-out: %d candidates (excluded from train/val/test/inspected)", len(eval_idx))
+        eval_set_filter = set(eval_idx)
+
+        # Generalization-testing countries: any labelled candidate whose ADM0 is
+        # in cfg.data.generalization_countries is forced into a "generalization"
+        # split. Never enters train/val/test/eval/inspected. See
+        # docs/EVAL_FRAMEWORK.md.
+        gen_idx: list[int] = []
+        gen_iso = {iso.upper() for iso in (getattr(cfg.data, "generalization_countries", []) or [])}
+        if gen_iso:
+            # Candidate IDs follow the `{ADM0}_cluster_{n}` convention from
+            # rachel_to_candidates.py, so the prefix before the first underscore
+            # is the ADM0 ISO code.
+            meta_iso = (
+                meta["candidate_id"].astype(str)
+                .str.split("_", n=1, expand=True)[0].str.upper()
+            )
+            gen_mask = meta_iso.isin(gen_iso) & (meta["_label"] != -1)
+            gen_idx = list(meta.index[gen_mask])
+            if gen_idx:
+                log.info(
+                    "generalization hold-out: %d candidates from %s "
+                    "(excluded from train/val/test/eval/inspected)",
+                    len(gen_idx), sorted(gen_iso),
+                )
+        gen_set_filter = set(gen_idx)
+
+        # Generalization takes priority over eval_set: any candidate that is
+        # both eval_set=True AND in a generalization country goes to the
+        # generalization split, not eval. Otherwise eval_ds would be
+        # contaminated with OOD rows (Rachel's representative sample is only
+        # meaningful inside the training countries).
+        if gen_set_filter and eval_idx:
+            before = len(eval_idx)
+            eval_idx = [i for i in eval_idx if i not in gen_set_filter]
+            eval_set_filter = set(eval_idx)
+            if before != len(eval_idx):
+                log.info(
+                    "eval_set ∩ generalization: %d rows reassigned to generalization",
+                    before - len(eval_idx),
+                )
+
+        rng = np.random.default_rng(cfg.training.seed)
+
+        # Pool of rows eligible for train/val/test: labeled (_label != -1) and not
+        # in the eval_set hold-out. Restricting the splitter inputs to this pool
+        # keeps unlabeled rows (carried by include_unlabeled=true) from claiming
+        # val/test slots in country-balanced splits.
+        labeled_pool_mask = (meta["_label"] != -1)
+        if eval_set_filter:
+            labeled_pool_mask = labeled_pool_mask & ~meta.index.isin(eval_set_filter)
+        if gen_set_filter:
+            labeled_pool_mask = labeled_pool_mask & ~meta.index.isin(gen_set_filter)
+
+        # Strict whitelist: when cfg.data.training_countries is set, any labelled
+        # row whose ADM0 is NOT in (training_countries ∪ generalization_countries)
+        # is removed from the labeled pool -- it will end up in the "unlabeled"
+        # split. This enforces Rachel's framework (see docs/EVAL_FRAMEWORK.md):
+        # only the named training countries contribute to train/val/test/inspected.
+        train_iso = {iso.upper() for iso in (getattr(cfg.data, "training_countries", []) or [])}
+        if train_iso:
+            allowed = train_iso | gen_iso  # gen rows are already routed elsewhere
+            meta_iso_all = (
+                meta["candidate_id"].astype(str)
+                .str.split("_", n=1, expand=True)[0].str.upper()
+            )
+            non_allowed_mask = labeled_pool_mask & ~meta_iso_all.isin(allowed)
+            n_demoted = int(non_allowed_mask.sum())
+            if n_demoted:
+                log.info(
+                    "training-country whitelist: demoting %d labelled rows outside %s "
+                    "to the unlabeled split",
+                    n_demoted, sorted(train_iso),
+                )
+                labeled_pool_mask = labeled_pool_mask & ~non_allowed_mask
+                meta.loc[non_allowed_mask, "_label"] = -1
+
+        # DMV protection: Rachel reserves rows whose label_source contains "DMV"
+        # for IF fitting. To prevent val/test from being inflated by this easy
+        # clean subset, force DMV rows into the train split. Their labels stay
+        # available for training (CNN train ≡ IF fit) but they never enter the
+        # holdout slices.
+        dmv_idx: list[int] = []
+        if getattr(cfg.data, "dmv_force_to_train_only", False) and "label_source" in candidates.columns:
+            ls_map = dict(zip(candidates["id"].astype(str), candidates["label_source"].fillna("")))
+            dmv_mask = (
+                meta["candidate_id"].astype(str).map(ls_map).fillna("")
+                .astype(str).str.contains("DMV", case=False, na=False)
+            )
+            dmv_idx = list(meta.index[dmv_mask & labeled_pool_mask])
+            if dmv_idx:
+                log.info("DMV protection: %d rows pinned to train", len(dmv_idx))
+        dmv_set = set(dmv_idx)
+
+        labeled_meta = meta[labeled_pool_mask]
+
+        # If inspected_as_test, hold out inspected candidates as a separate eval set
+        inspected_as_test = getattr(cfg.data, "inspected_as_test", False)
+        inspected_idx: list[int] = []
+        if inspected_as_test and "viz_status" in candidates.columns:
+            viz_map = dict(zip(candidates["id"].astype(str), candidates["viz_status"].fillna("")))
+            meta["_viz_status"] = meta["candidate_id"].astype(str).map(viz_map).fillna("")
+            # Only count LABELED rows as "inspected" so the metric is meaningful;
+            # unlabeled inspected rows fall through to the "unlabeled" split.
+            inspected_mask = (meta["_viz_status"] == "inspected") & labeled_pool_mask
+            inspected_idx = list(meta.index[inspected_mask])
+            remaining_idx = list(meta.index[labeled_pool_mask & ~inspected_mask])
+            n_inspected = len(inspected_idx)
+            log.info("Inspected hold-out: %d candidates (excluded from train/val/test)", n_inspected)
+
+            # Split remaining into train/val/test
+            balanced = getattr(cfg.training, "balanced_country_splits", False)
+            if balanced:
+                # Build a temporary meta with remaining indices for country-balanced splitting
+                remaining_meta = meta.iloc[remaining_idx].copy()
+                remaining_meta.index = range(len(remaining_meta))
+                tr_local, va_local, te_local = _country_balanced_split_indices(
+                    remaining_meta, candidates, cfg, rng,
+                )
+                train_idx = [remaining_idx[i] for i in tr_local]
+                val_idx = [remaining_idx[i] for i in va_local]
+                test_idx = [remaining_idx[i] for i in te_local]
+            else:
+                remaining_meta = meta.iloc[remaining_idx].reset_index(drop=True)
+                remaining_labels = remaining_meta["_label"].to_numpy()
+                train_local, val_local, test_local = _stratified_class_split(
+                    remaining_labels, cfg.training.test_split, cfg.training.val_split, rng,
+                )
+                train_idx = [remaining_idx[i] for i in train_local]
+                val_idx = [remaining_idx[i] for i in val_local]
+                test_idx = [remaining_idx[i] for i in test_local]
+            meta.drop(columns=["_viz_status"], inplace=True)
+        elif bool(cfg.data.train_regions):
+            train_idx, val_idx, test_idx = _region_split_indices(
+                labeled_meta, candidates, cfg, rng,
+            )
+        elif getattr(cfg.training, "balanced_country_splits", False):
+            # Re-index to 0..N-1 so the splitter's positional logic is correct;
+            # then map back to original meta indices.
+            lm = labeled_meta.copy(); lm.index = range(len(lm))
+            labeled_orig = labeled_meta.index.tolist()
+            tr_local, va_local, te_local = _country_balanced_split_indices(
+                lm, candidates, cfg, rng,
+            )
+            train_idx = [labeled_orig[i] for i in tr_local]
+            val_idx = [labeled_orig[i] for i in va_local]
+            test_idx = [labeled_orig[i] for i in te_local]
+        else:
+            train_idx, val_idx, test_idx = _random_split_indices(
+                labeled_meta, cfg, rng,
+            )
 
     # DMV pin: any DMV row that landed in val/test/inspected is pulled into train.
     if dmv_set:
@@ -779,6 +848,7 @@ def build_splits(
     strip_set = (
         set(eval_set_filter)
         | set(gen_set_filter)
+        | set(qual_set_filter)
         | set(meta.index[meta["_label"] == -1])
     )
     if strip_set:
@@ -794,11 +864,31 @@ def build_splits(
                 before - after, before, after,
             )
 
+    # The eval / generalization / qual_eval hold-outs are EVALUATED with a
+    # CrossEntropy loss, so an unlabeled (label==-1) row would trip the CUDA
+    # `t >= 0 && t < n_classes` assert. train/val/test are stripped of -1 above;
+    # the hold-out slices need the same guard (v5 eval happened to be fully
+    # labelled, so this only surfaced once v6 added unlabeled rows to eval/qual).
+    neg = set(meta.index[meta["_label"] == -1])
+    n_before = len(eval_idx) + len(gen_idx) + len(qual_idx)
+    eval_idx = [i for i in eval_idx if i not in neg]
+    gen_idx = [i for i in gen_idx if i not in neg]
+    qual_idx = [i for i in qual_idx if i not in neg]
+    n_after = len(eval_idx) + len(gen_idx) + len(qual_idx)
+    if n_before != n_after:
+        log.info("Dropped %d unlabeled rows from eval/gen/qual_eval hold-outs (%d -> %d)",
+                 n_before - n_after, n_before, n_after)
+
     meta_clean = meta.drop(columns=["_label"])
     if "_eval" in meta_clean.columns:
         meta_clean = meta_clean.drop(columns=["_eval"])
 
-    split_mode = "inspected_holdout" if inspected_idx else ("region" if bool(cfg.data.train_regions) else "random")
+    split_mode = (
+        "explicit" if has_explicit_splits
+        else "inspected_holdout" if inspected_idx
+        else "region" if bool(cfg.data.train_regions)
+        else "random"
+    )
     log.info(
         "Splits (%s): train=%d  val=%d  test=%d  inspected=%d  eval=%d  generalization=%d  (pos ratio: %.2f)",
         split_mode,
@@ -810,6 +900,26 @@ def build_splits(
         len(gen_idx),
         meta["_label"].mean(),
     )
+    # Per-class composition of every labelled split. A class with 0 train
+    # rows is unlearnable — fail loudly instead of silently training without it.
+    all_classes = sorted(int(c) for c in meta.loc[meta["_label"] >= 0, "_label"].unique())
+    for split_name, idx_list in [
+        ("train", train_idx), ("val", val_idx), ("test", test_idx),
+        ("inspected", inspected_idx), ("eval", eval_idx), ("generalization", gen_idx),
+        ("qual_eval", qual_idx),
+    ]:
+        if not idx_list:
+            continue
+        counts = meta.loc[idx_list, "_label"].value_counts().to_dict()
+        log.info("  %s class counts: %s", split_name,
+                 {c: int(counts.get(c, 0)) for c in all_classes})
+    missing_train = [c for c in all_classes if int((meta.loc[train_idx, "_label"] == c).sum()) == 0]
+    if missing_train:
+        raise ValueError(
+            f"Classes {missing_train} have ZERO rows in the train split — "
+            "the model could never learn them. Check split configuration "
+            "(this guards against the v6/v7 OtherFarm-drop bug)."
+        )
 
     # Persist split assignments so we can colour the map later
     split_col = pd.Series("unassigned", index=meta_clean.index)
@@ -828,6 +938,9 @@ def build_splits(
     if gen_idx:
         # generalization overrides any prior assignment -- absolute OOD hold-out.
         split_col.iloc[gen_idx] = "generalization"
+    if qual_idx:
+        # Rachel's qualitative-eval hold-out -- reported, never trained on.
+        split_col.iloc[qual_idx] = "qual_eval"
     splits_df = meta_clean[["candidate_id"]].copy()
     splits_df["split"] = split_col
     splits_dir = patches_root / "splits"
@@ -871,10 +984,32 @@ def build_splits(
     if gen_idx:
         gen_ds = PatchDataset(meta_clean.iloc[gen_idx], candidates, patches_root, augment=False, **ds_kwargs)
 
+    qual_ds = None
+    if qual_idx:
+        qual_ds = PatchDataset(meta_clean.iloc[qual_idx], candidates, patches_root, augment=False, **ds_kwargs)
+
     # Compute per-sample weights for region and/or class upsampling.
     # When both are enabled, weights multiply: each sample's draw probability
     # is proportional to (1/n_country) * (1/n_class), giving roughly equal
     # representation across both axes per epoch.
+    # Per-channel standardisation: stats from TRAIN patches only (no
+    # augmentation), persisted beside the split CSV so inference applies
+    # the identical transform.
+    if getattr(cfg.training, "normalization", "none") == "per_channel":
+        mean, std = _compute_norm_stats(train_ds)
+        stats_path = splits_dir / f"{cfg._config_stem}_norm_stats.json"
+        import json as _json
+        stats_path.write_text(_json.dumps(
+            {"mean": mean.tolist(), "std": std.tolist(),
+             "channel_subset": channel_subset or (list(cfg.patches.bands) + list(cfg.patches.indices))},
+            indent=2,
+        ))
+        log.info("Per-channel norm stats (n_train sample): mean=%s std=%s -> %s",
+                 np.round(mean, 4).tolist(), np.round(std, 4).tolist(), stats_path)
+        for ds in (train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds, qual_ds):
+            if ds is not None:
+                ds.norm_stats = (mean, std)
+
     region_w = None
     class_w = None
     if cfg.training.upsample_minority_regions:
@@ -892,7 +1027,58 @@ def build_splits(
     elif class_w is not None:
         train_ds.sample_weights = class_w
 
-    return train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds
+    return train_ds, val_ds, test_ds, inspected_ds, eval_ds, gen_ds, qual_ds
+
+
+def _compute_norm_stats(
+    ds: PatchDataset, max_samples: int = 512,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-channel mean/std over a random sample of *ds* items (augmentation off).
+
+    Stats are computed on the FINAL channel layout (post scaling / crop /
+    channel_subset), so they can be applied verbatim at inference time.
+    """
+    saved_augment = ds.augment
+    ds.augment = False
+    try:
+        rng = np.random.default_rng(0)
+        n = len(ds)
+        idx = rng.choice(n, size=min(max_samples, n), replace=False)
+        acc_sum = None
+        acc_sq = None
+        count = 0
+        for i in idx:
+            x, _ = ds[int(i)]
+            a = x.numpy().astype(np.float64)
+            c = a.shape[0]
+            flat = a.reshape(c, -1)
+            if acc_sum is None:
+                acc_sum = flat.sum(axis=1)
+                acc_sq = (flat ** 2).sum(axis=1)
+            else:
+                acc_sum += flat.sum(axis=1)
+                acc_sq += (flat ** 2).sum(axis=1)
+            count += flat.shape[1]
+        mean = acc_sum / count
+        var = acc_sq / count - mean ** 2
+        std = np.sqrt(np.maximum(var, 1e-12))
+        std = np.maximum(std, 1e-6)  # guard against constant channels
+        return mean.astype(np.float32), std.astype(np.float32)
+    finally:
+        ds.augment = saved_augment
+
+
+def load_norm_stats(patches_root: Path, config_stem: str) -> "tuple[np.ndarray, np.ndarray] | None":
+    """Load persisted per-channel norm stats for *config_stem*, or None."""
+    import json as _json
+    stats_path = Path(patches_root) / "splits" / f"{config_stem}_norm_stats.json"
+    if not stats_path.exists():
+        return None
+    payload = _json.loads(stats_path.read_text())
+    return (
+        np.asarray(payload["mean"], dtype=np.float32),
+        np.asarray(payload["std"], dtype=np.float32),
+    )
 
 
 def _compute_class_weights(

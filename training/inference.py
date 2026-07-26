@@ -61,8 +61,21 @@ def _load_model(cfg: PipelineConfig, device: torch.device):
     return model
 
 
+def _tta_probs(model, batch_x: torch.Tensor) -> torch.Tensor:
+    """Average softmax probabilities over the 8 dihedral transforms."""
+    probs_sum = None
+    for k in range(4):
+        rotated = torch.rot90(batch_x, k=k, dims=(2, 3))
+        for flip in (False, True):
+            x = torch.flip(rotated, dims=(3,)) if flip else rotated
+            p = torch.softmax(model(x), dim=1)
+            probs_sum = p if probs_sum is None else probs_sum + p
+    return probs_sum / 8.0
+
+
 @torch.no_grad()
-def _run_inference(model, loader, device, threshold, num_classes: int = 2):
+def _run_inference(model, loader, device, threshold, num_classes: int = 2, tta: bool = False,
+                   amp: bool = False):
     """Run inference. Returns (scores, preds, probs_matrix_or_None).
 
     Binary (num_classes=2):
@@ -70,11 +83,20 @@ def _run_inference(model, loader, device, threshold, num_classes: int = 2):
     Multi-class (num_classes>=3):
         scores = top-1 probability, preds = argmax over classes.
         Per-class probabilities are also returned for downstream coloring.
+
+    *amp* autocasts the forward pass to fp16 on CUDA -- faster, but perturbs
+    probabilities enough to flip argmax on near-ties, so callers opt in.
     """
     is_multi = num_classes >= 3
+    use_amp = amp and device.type == "cuda"
     all_scores, all_preds, all_probs = [], [], []
     for batch_x, _ in loader:
-        probs = torch.softmax(model(batch_x.to(device)), dim=1).cpu().numpy()
+        batch_x = batch_x.to(device, non_blocking=True)
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            if tta:
+                probs = _tta_probs(model, batch_x).float().cpu().numpy()
+            else:
+                probs = torch.softmax(model(batch_x), dim=1).float().cpu().numpy()
         if is_multi:
             preds = probs.argmax(axis=1)
             top1 = probs.max(axis=1)
@@ -97,18 +119,21 @@ def _attach_labels(result, candidates):
         result[col] = result["candidate_id"].astype(str).map(mapping).fillna(fill)
     result["true_label"] = result["true_label"].astype(int)
 
-    # Propagate diagnostic columns from the source parquet so reviewers can
-    # audit "bad labels" without having to re-join. Each column is optional;
-    # only attach the ones the candidate CSV actually carries.
-    for diag_col in (
-        "original_label", "standardized_label", "visual_label",
-        "label_source", "notes", "eval_set", "random_sample", "viz_status",
-    ):
-        if diag_col not in candidates.columns:
+    # Propagate every remaining candidate column generically (not an
+    # allowlist) so reviewers can audit "bad labels" without a re-join, and so
+    # any new column rachel_to_candidates.py starts carrying (e.g. a new
+    # Rachel provenance field) reaches scored_candidates.parquet automatically
+    # -- no code change needed here when the schema grows. See
+    # docs/EXPERIMENTS_LOG.md 2026-07-21.
+    _HANDLED = {"id", "label", "source", "country"}
+    for col in candidates.columns:
+        if col in _HANDLED or col in result.columns:
             continue
-        mapping = dict(zip(cid_str, candidates[diag_col]))
-        fill = 0 if diag_col in ("eval_set", "random_sample") else ""
-        result[diag_col] = result["candidate_id"].astype(str).map(mapping).fillna(fill)
+        mapping = dict(zip(cid_str, candidates[col]))
+        mapped = result["candidate_id"].astype(str).map(mapping)
+        if candidates[col].dtype == object:
+            mapped = mapped.fillna("")
+        result[col] = mapped
 
 
 def _find_patches_root(output_dir: Path) -> Path:
@@ -127,10 +152,21 @@ def _load_candidates_csv(candidates_dir: str | Path, countries: list[str]) -> pd
     cdir = Path(candidates_dir)
     frames: list[pd.DataFrame] = []
     if countries:
+        missing = []
         for country in countries:
             csv_path = cdir / f"{country}.csv"
             if csv_path.exists():
                 frames.append(pd.read_csv(csv_path))
+            else:
+                missing.append(country)
+        # Loud, because a sharded scoring run splits work by country: a shard
+        # whose CSVs are all absent would otherwise "succeed" with 0 rows and
+        # silently punch a hole in the merged output.
+        if missing:
+            log.warning(
+                "%d/%d requested country CSVs absent from %s: %s",
+                len(missing), len(countries), cdir, ", ".join(sorted(missing)[:10]),
+            )
     else:
         for csv_path in sorted(cdir.glob("*.csv")):
             frames.append(pd.read_csv(csv_path))
@@ -185,6 +221,12 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     meta = meta[meta["candidate_id"].astype(str).isin(config_ids)].reset_index(drop=True)
     log.info("Filtered to %d patches matching config candidates", len(meta))
 
+    # Dedup per candidate (append-only meta can hold superseded rows) and
+    # refuse patches whose stored coords no longer match the candidate --
+    # otherwise a renumbered cluster_id scores the wrong location's imagery.
+    from .config import validate_patch_locations
+    meta = validate_patch_locations(meta, candidates, context="score_candidates")
+
     valid_ids = set(meta["candidate_id"].astype(str))
     cands_filtered = candidates[candidates["id"].astype(str).isin(valid_ids)].copy()
 
@@ -199,19 +241,55 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
         )
     crop_size = getattr(cfg.training, "crop_center_px", None)
 
+    # Apply the same per-channel normalisation as training, if it was enabled.
+    # These files are keyed by config stem and only written at train time, so an
+    # inference-only config points norm_stats_stem at the config that trained
+    # the checkpoint rather than shipping a duplicate JSON per shard.
+    stats_stem = getattr(cfg.inference, "norm_stats_stem", None) or cfg._config_stem
+    norm_stats = None
+    if getattr(cfg.training, "normalization", "none") == "per_channel":
+        from .dataset import load_norm_stats
+        norm_stats = load_norm_stats(patches_root, stats_stem)
+        if norm_stats is None:
+            raise FileNotFoundError(
+                f"training.normalization=per_channel but no norm stats found at "
+                f"{patches_root}/splits/{stats_stem}_norm_stats.json — "
+                "run training first (build_splits persists them), or set "
+                "inference.norm_stats_stem to the config that trained this checkpoint."
+            )
+        log.info("Loaded per-channel norm stats")
+
     ds = PatchDataset(meta, cands_filtered, patches_root, augment=False,
                       n_spectral_bands=n_spectral, channel_indices=channel_indices,
-                      crop_size=crop_size)
-    loader = DataLoader(ds, batch_size=cfg.training.batch_size, shuffle=False, num_workers=0)
+                      crop_size=crop_size, norm_stats=norm_stats)
+    # Forward-only, so this can run a much larger batch and load patches in
+    # parallel. On big scoring jobs the loader (reading .npy off the network
+    # volume), not the GPU, is the bottleneck. Neither knob changes results:
+    # shuffle=False and the model is in eval().
+    infer_bs = getattr(cfg.inference, "batch_size", None) or cfg.training.batch_size
+    infer_workers = getattr(cfg.inference, "num_workers", None)
+    if infer_workers is None:
+        infer_workers = getattr(cfg.training, "dataloader_workers", 0)
+    loader = DataLoader(
+        ds, batch_size=infer_bs, shuffle=False, num_workers=infer_workers,
+        pin_memory=(device.type == "cuda"),
+        persistent_workers=infer_workers > 0,
+    )
+    log.info("Inference loader: batch_size=%d num_workers=%d", infer_bs, infer_workers)
 
     # Compute effective input_channels
     if channel_subset:
         cfg.model.input_channels = len(channel_subset)
+        cfg.model.in_channel_names = list(channel_subset)
+    else:
+        cfg.model.in_channel_names = list(cfg.patches.bands) + list(cfg.patches.indices)
 
     model = _load_model(cfg, device)
     num_classes = getattr(cfg.model, "num_classes", 2)
     scores_arr, preds_arr, probs_matrix = _run_inference(
         model, loader, device, cfg.inference.threshold, num_classes=num_classes,
+        tta=getattr(cfg.inference, "tta", False),
+        amp=getattr(cfg.inference, "mixed_precision", False),
     )
 
     result = meta[["candidate_id", "lat", "lng"]].copy()
@@ -224,8 +302,9 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
             result[f"prob_class{i}"] = probs_matrix[:, i]
     _attach_labels(result, candidates)
 
-    # Attach split assignments if available (config-specific)
-    splits_path = patches_root / "splits" / f"{cfg._config_stem}.csv"
+    # Attach split assignments if available (config-specific; norm_stats_stem
+    # also redirects this so scoring shards inherit the training run's splits)
+    splits_path = patches_root / "splits" / f"{stats_stem}.csv"
     if not splits_path.exists():
         # Fallback to legacy shared path
         splits_path = patches_root / "split_assignments.csv"
@@ -239,6 +318,24 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
         result["split"] = "inspected"
     else:
         result["split"] = "unknown"
+
+    # Rachel's own assignment is the authority, and a scoring run routinely
+    # covers candidates the training splits file never saw -- either because
+    # they postdate it, or because a rebuild renumbered cluster_ids so the id
+    # lookup above cannot match. Backfill (never overwrite) from
+    # cnn_split_assigned so slices like `qual_eval` -- her qualitative-eval
+    # pool, which is scored but deliberately never trained on -- survive into
+    # the scored output instead of collapsing to "unknown".
+    if "cnn_split_assigned" in result.columns:
+        explicit = result["cnn_split_assigned"].astype(str).str.strip()
+        fill = result["split"].isin(["unknown", ""]) & explicit.ne("") & explicit.ne("nan")
+        if fill.any():
+            result.loc[fill, "split"] = explicit[fill]
+            log.info(
+                "Backfilled `split` for %d rows from cnn_split_assigned: %s",
+                int(fill.sum()),
+                result.loc[fill, "split"].value_counts().to_dict(),
+            )
 
     geometry = [Point(lng, lat) for lng, lat in zip(result["lng"], result["lat"])]
     scored_gdf = gpd.GeoDataFrame(result, geometry=geometry, crs="EPSG:4326")

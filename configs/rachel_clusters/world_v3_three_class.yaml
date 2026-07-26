@@ -1,19 +1,30 @@
 # ============================================================================
-# world_v3_three_class -- NotFarm / Poultry / OtherFarm trained on v3 rebuild.
+# world_v3_three_class -- NotFarm / Poultry / OtherFarm, re-run on Rachel's v10
+# explicit train/val/test/eval/generalization split assignment.
 # Classes (rachel_to_candidates.py three_class mode):
 #   0 NotFarm
 #   1 Poultry  (Meat + Eggs + Unspecified/Other poultry)
 #   2 OtherFarm (Pigs + Cattle)
 # Ambiguous farm types (Mixed/Other/Unknown/PigsOrPoultry) are dropped entirely.
-# - eval_set rows held out as `eval` split.
+# - Rachel added a `cnn_split_assigned` column to the for_analysis files
+#   (train/val/test/eval/generalization/predict) that is now the single
+#   source of truth for split membership -- see training/dataset.py
+#   build_splits(). BGD/NGA rows are pre-assigned "generalization" (test-only,
+#   never train) directly by that column; training_countries/
+#   generalization_countries/dmv_force_to_train_only/balanced_country_splits
+#   are unused in this mode.
 # - Inference scores all clusters (include_unlabeled: true).
 # ============================================================================
+# GEOFIX re-run (2026-07-20): previous run trained/evaluated with ~34.6% of
+# labeled-country patches showing the WRONG location (patch store keyed by
+# cluster_id survived the 06-23 id renumbering). Store repaired + pipeline now
+# validates patch coords (training/config.py validate_patch_locations).
 
-run_name: "world_v3_three_class"
+run_name: "world_v3_three_class_geofix"
 
 data:
   candidates_dir: data/rachel_geometry_candidates/candidates_world_v3_three_class
-  parquet_source: data/rachel_geometry_candidates/all_countries/all_clusters_v3.parquet
+  parquet_source: data/rachel_geometry_candidates/all_countries/all_clusters_v5.parquet
   inspected_as_test: true
   include_unlabeled: true
   label_mode: three_class
@@ -53,6 +64,7 @@ training:
   upsample_minority_regions: true
   balanced_country_splits: true
   balanced_class_sampling: true
+  dataloader_workers: 8
   channel_subset: [B2, B3, B4, NDWI]
   crop_center_px: 64
   augmentation:
@@ -89,7 +101,7 @@ runpod:
   volume_mount: /workspace
   code_dir: /workspace/farm-mapping
   github_repo: https://github.com/FilipZawadka/farm-mapping.git
-  github_branch: main
+  github_branch: more_cnn_tests
   api_key_env: RUNPOD_API_KEY
   network_volume_id: r8nyom4e4e
   cpu_instance_id: "cpu3g-8-32"

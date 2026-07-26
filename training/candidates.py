@@ -469,6 +469,8 @@ def main() -> None:
             label_mode=getattr(cfg.data, "label_mode", "binary"),
             exclude_labels=getattr(cfg.data, "exclude_labels", None) or None,
             exclude_osm_farms=getattr(cfg.data, "exclude_osm_farms", False),
+            inspected_only=getattr(cfg.data, "inspected_only", False),
+            keep_unscorable_labels=getattr(cfg.data, "keep_unscorable_labels", False),
         )
         return
 

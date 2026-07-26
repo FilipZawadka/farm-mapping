@@ -34,6 +34,7 @@ class EarthEngineSentinel2Provider:
         indices: list[str] | None = None,
         max_cloud_cover: int = 15,
         composite: str = "median",
+        cloud_mask: str = "none",
         **_kwargs: Any,
     ):
         self.collection = collection
@@ -41,11 +42,22 @@ class EarthEngineSentinel2Provider:
         self.indices = indices or DEFAULT_INDICES
         self.max_cloud_cover = max_cloud_cover
         self.composite = composite
+        self.cloud_mask = cloud_mask
 
     def band_names(self) -> list[str]:
         return list(self.bands) + [
             i for i in self.indices if i in INDEX_FORMULAS
         ]
+
+    @staticmethod
+    def _mask_scl_clouds(img: ee.Image) -> ee.Image:
+        """Mask cloud shadow (3), cloud medium/high probability (8, 9) and
+        cirrus (10) using the Scene Classification Layer."""
+        scl = img.select("SCL")
+        clear = (
+            scl.neq(3).And(scl.neq(8)).And(scl.neq(9)).And(scl.neq(10))
+        )
+        return img.updateMask(clear)
 
     def build_image(
         self,
@@ -54,7 +66,20 @@ class EarthEngineSentinel2Provider:
         date_end: str,
     ) -> ee.Image:
         """Build S2 composite + selected bands and indices clipped to region."""
-        if self.collection != DEFAULT_COLLECTION:
+        if self.cloud_mask == "scl":
+            s2 = (
+                ee.ImageCollection(self.collection)
+                .filterBounds(region)
+                .filterDate(date_start, date_end)
+                .filter(
+                    ee.Filter.lt(
+                        "CLOUDY_PIXEL_PERCENTAGE", self.max_cloud_cover
+                    )
+                )
+                .map(self._mask_scl_clouds)
+            )
+            composite_img = s2.median().clip(region)
+        elif self.collection != DEFAULT_COLLECTION:
             s2 = (
                 ee.ImageCollection(self.collection)
                 .filterBounds(region)

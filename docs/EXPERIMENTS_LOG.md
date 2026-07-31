@@ -687,3 +687,78 @@ now carry the verdicts above. Every release also got its exact archived
 (not hand-allowlisted) column forwarding end to end — see
 `training/rachel_to_candidates.py`, `training/inference.py`,
 `web/scripts/export_dataset.py`, `web/src/lib/download.ts`.
+
+---
+
+## 2026-07-30/31 — round_2 data (v7) and the positives rebalance (v8)
+
+Rachel shipped `*_selected_clusters_round_2.parquet` for all 167 countries.
+Verified vs v6 before use: **cluster_ids 100% identical on byte-identical
+geometry**, so the patch store was reused as-is (no re-extraction, no
+re-keying) — `scripts/merge_clusters_v7.py` asserts this and refuses to
+id-join otherwise. Changes: 962 rows promoted qual_eval→train/val (**all
+NotFarm** — solar arrays, greenhouses/plastic crop covers) across 106
+countries; 28 label corrections; ALB (140) + COD (47) newly labelled and set
+to generalization. Splits were taken verbatim: Rachel's `cnn_split_assigned`
+→ merged parquet → candidate CSVs → the split file `build_splits` wrote,
+verified 100% identical at every hop, with train spanning 106 countries
+(proving the `training_countries` whitelist is inert on the explicit path).
+
+### v7 — trained on round_2 as-is. A threshold shift, not a better model.
+
+At the default threshold farm false-positives collapsed and recall collapsed
+with them:
+
+| slice | FP rate v6→v7 | farm recall v6→v7 |
+|---|---|---|
+| ALB+COD | 66.2% → 5.0% | 92.5% → 42.5% |
+| qual_eval | 4.9% → 0.6% | 86.8% → 58.9% |
+
+**ROC-AUC did not improve** (ALB+COD 0.777→0.772; BGD+NGA 0.979→0.910), and
+at a *matched* FP rate both models gave identical recall (ALB+COD 95.0% for
+each). Mean P(farm) fell for true NotFarms (0.091→0.021) *and* for true farms
+(0.846→0.568) — the model globally stopped saying "farm". Cause: the added
+labels were 100% negatives in countries with no prior training signal, so the
+only lesson available was "not a farm".
+
+### v8 — same data, plus farm positives. The fix.
+
+`scripts/rebalance_splits_v8.py` promotes 1,740 farm positives from the same
+qual_eval pool on Rachel's own convention (≤50/country, 80:20 train:val,
+seeded). Train 10,865→12,268; **87 countries now carry both farm and
+not-farm examples** (v7: only the original 5). test/eval/generalization
+membership byte-identical to Rachel's, so the comparison is clean.
+
+**ROC-AUC rises everywhere** (v7→v8): ALB+COD **0.772→0.912**, BGD+NGA
+0.910→0.936, qual_eval 0.952→0.981, eval 0.903→0.919, test flat 0.993. That
+is real discrimination, not a moved threshold.
+
+Versus v6 at the default threshold, on the inference countries v8 **lowers
+FPs and raises recall simultaneously**: qual_eval FP 4.9%→3.6% with recall
+86.8%→**88.9%**; ALB+COD FP 66.2%→**12.9%** keeping 80.0% recall. Training
+countries preserved (test per-class within ±0.02). Per-class on qual_eval vs
+v6: Pigs **+0.124** (0.355→0.478), Poultry +0.080, NotFarm +0.010.
+
+### Takeaways
+
+1. **One-sided labels teach a prior, not a feature.** The v7/v8 pair is a
+   controlled demonstration: same countries, same pipeline, negatives-only
+   vs balanced — opposite outcomes. Future labelling rounds should collect
+   confirmed positives alongside corrected false-positives.
+2. **AUC is the check that catches this.** A fixed-threshold FP rate cannot
+   distinguish "better model" from "more reluctant model"; run it on every
+   future comparison.
+3. **Pigs→Poultry confusion is the structural ceiling and has not moved:**
+   true pigs land on Poultry 42%/27%/45% in v6/v7/v8. v8's Pigs gain came
+   from precision, not from fixing this. Same failure the geofix matrix found.
+4. **Cattle is unmeasurable at current label counts** (155 train, 7 qual_eval,
+   25 test rows) — F1 swings on noise; no modelling change will fix it.
+5. **BGD+NGA regressed at the default threshold while its AUC improved** —
+   an operating-point problem, fixable by thresholding. Note round_2 moved 26
+   BGD/NGA rows into train/val, so that slice is no longer a pure hold-out.
+
+### Next levers
+
+Per-class threshold calibration on val (highest value/effort — ranking is
+good, the operating point is the free parameter); more Pigs/Cattle labels;
+`balanced_class_sampling` and the 128px crop, both untested on this data.

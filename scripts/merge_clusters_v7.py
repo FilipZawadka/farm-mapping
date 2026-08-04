@@ -60,21 +60,23 @@ MAX_DRIFT_DEG = 1e-6
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--round2-dir", required=True,
-                     help="dir holding the round_2 parquets (searched recursively)")
+                     help="dir holding the per-country round parquets (searched recursively)")
+    ap.add_argument("--pattern", default="*_selected_clusters_round_2.parquet",
+                     help="glob for the per-country files; set to *_selected_clusters_round_3.parquet "
+                          "(etc.) for later rounds. The ISO code is parsed from the filename.")
     ap.add_argument("--prev", required=True,
                      help="all_clusters_v6.parquet -- source of the carry-over columns")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
-    files = sorted(glob.glob(os.path.join(args.round2_dir, "**", "*_selected_clusters_round_2.parquet"),
-                             recursive=True))
+    files = sorted(glob.glob(os.path.join(args.round2_dir, "**", args.pattern), recursive=True))
     if not files:
-        raise SystemExit(f"no round_2 parquets under {args.round2_dir}")
-    print(f"reading {len(files)} round_2 files ...")
+        raise SystemExit(f"no files matching {args.pattern} under {args.round2_dir}")
+    print(f"reading {len(files)} files matching {args.pattern} ...")
 
     parts = []
     for f in files:
-        iso = re.search(r"([A-Z]{3})_selected_clusters_round_2", os.path.basename(f)).group(1)
+        iso = re.search(r"([A-Z]{3})_selected_clusters_round_\d+", os.path.basename(f)).group(1)
         d = pd.read_parquet(f)
         # ADM0 is not in Rachel's per-country schema -- derived from the filename,
         # exactly as v3..v6 did. (Verified elsewhere to always equal the

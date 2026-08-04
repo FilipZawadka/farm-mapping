@@ -762,3 +762,80 @@ v6: Pigs **+0.124** (0.355→0.478), Poultry +0.080, NotFarm +0.010.
 Per-class threshold calibration on val (highest value/effort — ranking is
 good, the operating point is the free parameter); more Pigs/Cattle labels;
 `balanced_class_sampling` and the 128px crop, both untested on this data.
+
+---
+
+## 2026-08-03/04 — round_3 (v9) and the class-balancing verdict
+
+Rachel's round_3 files promote **1,963 farm clusters** qual_eval →
+train(1,571)/val(392), capped at **70 per country** over all eligible
+clusters (80:20), restricted to the three model farm classes (no
+`Farm: Unknown`). The cap admits every farm in LMICs while limiting European
+farms. Verified before use: same 157,102 rows / 167 countries / 32,214
+labels as round_2, **cluster_ids 100% stable on identical geometry** (patch
+store reused, no re-extraction), and test/eval/generalization membership
+untouched — so v7 → v8 → v9 is a clean line isolating split changes.
+
+### v9 — round_3 as-is. Indistinguishable from the earlier hand-built v8.
+
+The 70-cap and the earlier 50-cap converge, because most countries have
+fewer than 50 eligible farms: Poultry 7,616 vs 7,490, Pigs 1,576 vs 1,532,
+Cattle 153 vs 155, NotFarm 2,750 unchanged.
+
+| slice | AUC v8 → v9 | macro-F1 v8 → v9 |
+|---|---|---|
+| ALB+COD | 0.912 → 0.916 | 0.785 → 0.767 |
+| BGD+NGA | 0.936 → 0.937 | 0.462 → 0.448 |
+| qual_eval (11.8k) | 0.983 → 0.983 | 0.650 → 0.633 |
+| test | 0.993 → 0.994 | 0.805 → 0.803 |
+
+AUC flat to three decimals on the largest slices. **Once positives are in at
+all, the exact per-country cap is not a sensitive knob** — no need to tune it.
+
+### v9_bal — class balancing: helps in-domain, hurts out-of-domain
+
+Single lever: `balanced_class_sampling: true`. Train is 50:1
+Poultry:Cattle, so equal-mass weighting draws each of the 153 Cattle images
+~20x/epoch (Pigs ~1.9x, Poultry ~0.4x).
+
+**The effect replicates across two independent experiments, months apart,
+on different taxonomies and data:**
+
+| | test | eval | **gen** |
+|---|---|---|---|
+| geofix matrix (3-class): balanced vs baseline | −0.002 | **+0.027** | **−0.016** |
+| round_3 (4-class): v9_bal vs v9 | +0.007 | **+0.046** | **−0.054** |
+
+Consistently **eval up, generalization down**. Not a wash — a trade.
+
+Mechanism: `eval` is Rachel's representative sample from the *training*
+countries, the same domain the sampler reweights within, so matching a more
+balanced evaluation prior helps. `generalization` (BGD/NGA/ALB/COD) has **no
+training rows at all**; there the reweighting only shifts the decision
+boundary. And because NotFarm is just 22.7% of train against Poultry's 63%,
+balancing hands NotFarm ~2.75x more relative weight — the model turns
+cautious exactly where it is least informed. AUC barely moves (ALB+COD
+−0.032, qual_eval −0.003), confirming a prior shift rather than better
+ranking: farm recall on the inference countries falls 89.3% → 78.3%.
+
+**Cattle is the tell for memorisation.** On `test` (in-distribution)
+balancing helps: 0.556 → 0.636. On `qual_eval` (held-out world) it
+collapses: 0.250 → 0.000. Repeating 153 images 20x/epoch teaches those
+sites, not the concept. Cattle's qual_eval support is only 6 rows, but
+Poultry (−0.082) and Pigs (−0.045) have real support and point the same way.
+
+### Verdict
+
+Keep the **unbalanced** model while the inference countries are the target;
+balancing is the right call only if the deployment target shifts back to the
+five training countries. Country balancing remains off and should stay off:
+26 train countries have ≤2 rows and `_compute_region_weights` would draw a
+1-row country ~100x/epoch.
+
+Three consecutive split interventions (more negatives → v7, more positives →
+v8, larger positive cap → v9) have now left qual_eval AUC pinned at ~0.98.
+**The split-tinkering lever is exhausted.** The remaining levers worth effort
+are per-class threshold calibration (every model in this series is
+mis-calibrated at argmax-0.5, and it is free) and more Pigs/Cattle labels —
+Pigs sits at 0.48–0.55 F1, Cattle is unmeasurable at 153 training rows, and
+no sampling trick substitutes for examples.

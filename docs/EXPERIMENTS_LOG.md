@@ -839,3 +839,39 @@ are per-class threshold calibration (every model in this series is
 mis-calibrated at argmax-0.5, and it is free) and more Pigs/Cattle labels —
 Pigs sits at 0.48–0.55 F1, Cattle is unmeasurable at 153 training rows, and
 no sampling trick substitutes for examples.
+
+## 2026-08-06 — v10: the small-regularizer bundle (verdict: keep v9)
+
+**Setup.** Same round_3 data as v9, balancing off, three small levers bundled:
+label smoothing 0.05 (new `training.label_smoothing`, CE only), cutout on
+(2×16px holes @ p=0.5, applied pre-crop so ~22% effective sample rate), and
+epochs 70 / patience 15. Trained on an L4 (65 epochs, early stop). Full suite:
+`scripts/full_metrics_report.py`, results in
+`docs/METRICS_v10_vs_v9_2026-08-06.md` (protocol: qual_eval = intersection
+across versions, 11,437 labeled rows no model trained on).
+
+**Result: v10 ≤ v9 everywhere that matters.**
+
+| slice | AUC v9 | AUC v10 | note |
+|---|---|---|---|
+| test | 0.994 | 0.993 | tie |
+| eval | 0.911 | 0.903 | but better macro-F1 0.659 vs 0.602 and bal-acc |
+| generalization | 0.915 | 0.903 | CIs overlap; matched-FP recall 0.757 vs 0.765 |
+| qual_eval_common | 0.983 | 0.979 | small but consistent |
+
+- **Label smoothing worsened measured calibration** (qual_eval ECE 0.027 →
+  0.052; test 0.006 → 0.020): smoothing caps max confidence, which reads as
+  systematic under-confidence on the well-classified NotFarm mass. The OOD
+  miscalibration it was meant to address is a domain shift, not an
+  overconfidence artifact — smoothing can't fix it.
+- **Cutout did not fix Cattle**: test Cattle OvR-AUC fell 0.936 → 0.856,
+  generalization Cattle still 0/4. Sample size remains the binding constraint.
+- The one genuine gain — in-domain 4-class argmax quality (eval macro-F1
+  +0.057, MCC +0.038) — is on the slice deployment doesn't target.
+- v9+v10 mean-prob ensemble = v9 alone (0.915 / 0.983): v10 adds no diversity.
+
+**Verdict.** v9 stays the production model; v10 is not published. Together
+with round_3's cap-size insensitivity and the balancing verdict, this
+strengthens the log's standing conclusion: training-recipe tweaks on the
+current label set are exhausted — the leverage is in labels (Pigs/Cattle,
+balanced round_4 promotion) and deployment-side operating points.

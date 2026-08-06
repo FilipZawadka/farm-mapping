@@ -1,5 +1,6 @@
 # Secrets / credentials — NEVER commit these
 .env
+.env.*
 *.json
 !package.json
 !tsconfig.json
@@ -49,4 +50,4 @@ build/
 
 
 TODO.md
-todo_prompts.md 
+todo_prompts.md .env.bak*

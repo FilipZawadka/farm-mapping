@@ -497,6 +497,9 @@ class TrainingConfig(BaseModel):
     loss: Literal["cross_entropy", "focal", "logit_adjusted"] = "cross_entropy"
     focal_gamma: float = 2.0
     logit_adjust_tau: float = 1.0
+    # Label smoothing for the cross_entropy loss (ignored by focal /
+    # logit_adjusted). Softens one-hot targets; typical values 0.05-0.1.
+    label_smoothing: float = 0.0
     # Metric for best-checkpoint selection + early stopping. "val_loss"
     # (legacy) minimises weighted CE; "val_f1" maximises macro-F1 — more
     # robust for imbalanced multi-class runs.

@@ -79,6 +79,9 @@ def build_criterion(cfg, train_labels=None, device=None) -> nn.Module:
             priors, tau=getattr(cfg.training, "logit_adjust_tau", 1.0),
         )
     else:
-        criterion = nn.CrossEntropyLoss(weight=weights)
+        criterion = nn.CrossEntropyLoss(
+            weight=weights,
+            label_smoothing=getattr(cfg.training, "label_smoothing", 0.0),
+        )
 
     return criterion.to(device) if device is not None else criterion

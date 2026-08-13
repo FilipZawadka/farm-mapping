@@ -103,6 +103,18 @@ def _run_dir_name(run_name: str) -> str:
     return ts
 
 
+def _nv_log_path(cfg: "PipelineConfig", config_name: str) -> str:
+    """Per-config startup-log path on the network volume.
+
+    Must be unique per config: concurrent pods all tee into this path, and tee
+    truncates on open, so a single shared file loses every log but the last
+    writer's. Nested config names are flattened so the path stays one file.
+    """
+    code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
+    stem = config_name.removesuffix(".yaml").replace("/", "__")
+    return f"{code_dir}/runs/_startup_{stem}.log"
+
+
 def _run_dir_cmd(cfg: "PipelineConfig", config_name: str, step: str) -> str:
     """Shell snippet that creates a timestamped run directory and exports RUN_DIR.
 
@@ -111,7 +123,7 @@ def _run_dir_cmd(cfg: "PipelineConfig", config_name: str, step: str) -> str:
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     stem = config_name.removesuffix(".yaml")
     leaf = _run_dir_name(getattr(cfg, "run_name", ""))
-    nv_log = f"{code_dir}/runs/_latest_startup.log"
+    nv_log = _nv_log_path(cfg, config_name)
     return (
         f"export RUN_DIR={code_dir}/runs/{stem}/{step}/{leaf}"
         f" && mkdir -p $RUN_DIR"
@@ -358,7 +370,7 @@ def _wait_for_ssh(pod_id: str, runpod, timeout: int = 600) -> tuple[str, int]:
     raise TimeoutError(f"SSH not available on pod {pod_id} after {timeout}s")
 
 
-def _ssh_run_startup(host: str, port: int, script: str) -> None:
+def _ssh_run_startup(host: str, port: int, script: str, nv_log: str | None = None) -> None:
     """SSH into the pod and run the startup script inside a detached tmux session."""
     import subprocess, base64
     remote_script = "/tmp/prep_startup.sh"
@@ -373,9 +385,9 @@ def _ssh_run_startup(host: str, port: int, script: str) -> None:
     # Two-phase approach:
     # 1. Run the script, tee to /tmp/startup.log (always works)
     # 2. After EVERY line, append to network volume via a tail -f background process
-    nv_log = "/workspace/farm-mapping/runs/_latest_startup.log"
+    nv_log = nv_log or "/workspace/farm-mapping/runs/_latest_startup.log"
     wrapper = (
-        f"stdbuf -oL bash {remote_script} 2>&1"
+        f"mkdir -p $(dirname {nv_log}) ; stdbuf -oL bash {remote_script} 2>&1"
         f" | stdbuf -oL tee /tmp/startup.log {nv_log}"
     )
     run_cmd = f"tmux new-session -d -s prep '{wrapper}'"
@@ -502,7 +514,7 @@ def launch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml", step
     startup_script = _build_startup_script(cfg, config_name, steps=steps)
     log.info("Waiting for SSH on pod %s ...", pod_id)
     host, port = _wait_for_ssh(pod_id, runpod)
-    _ssh_run_startup(host, port, startup_script)
+    _ssh_run_startup(host, port, startup_script, nv_log=_nv_log_path(cfg, config_name))
     log.info(
         "Script running in tmux session 'prep'.\n"
         "  Attach : ssh -t root@%s -p %d 'tmux attach -t prep'\n"

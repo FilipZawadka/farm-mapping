@@ -62,29 +62,38 @@ def live_pod() -> tuple[str, int] | None:
 
 
 def pull(host: str, port: int, names: list[str]) -> list[str]:
+    """Stream wanted files back via tar over SSH.
+
+    The RunPod pytorch image has no rsync, so tar is the portable option: it is
+    present in every image and needs nothing installed on the pod.
+    """
     DEST.mkdir(parents=True, exist_ok=True)
-    ssh = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -p {port}"
-    includes = []
-    for w in WANT:
-        includes += ["--include", f"*/{w}"]
     pulled = []
     for name in names:
-        cmd = [
-            "rsync", "-az", "--timeout=120", "-e", ssh,
-            "--include", "*/",
-            *includes,
-            "--exclude", "*",
-            f"root@{host}:{REMOTE_OUT}/{name}/",
-            str(DEST / name) + "/",
-        ]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode == 0:
-            got = sorted(p.name for p in (DEST / name).glob("*"))
-            if got:
-                pulled.append(name)
-                log.info("  %-22s %s", name, ", ".join(got))
-        else:
-            log.warning("  %-22s rsync failed: %s", name, r.stderr.strip()[:160])
+        # Build the file list on the pod; missing files must not fail the tar.
+        globs = " ".join(f"{name}/{w}" for w in WANT)
+        remote = (
+            f"cd {REMOTE_OUT} 2>/dev/null && "
+            f"ls -d {globs} 2>/dev/null | tar czf - -T - 2>/dev/null || true"
+        )
+        proc = subprocess.run(
+            ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=15",
+             "-p", str(port), f"root@{host}", remote],
+            capture_output=True, timeout=600,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            continue
+        untar = subprocess.run(
+            ["tar", "xzf", "-", "-C", str(DEST)],
+            input=proc.stdout, capture_output=True,
+        )
+        if untar.returncode != 0:
+            log.warning("  %-22s untar failed: %s", name, untar.stderr.decode()[:160])
+            continue
+        got = sorted(p.name for p in (DEST / name).glob("*")) if (DEST / name).exists() else []
+        if got:
+            pulled.append(name)
+            log.info("  %-22s %s", name, ", ".join(got))
     return pulled
 
 

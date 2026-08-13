@@ -51,3 +51,4 @@ build/
 
 TODO.md
 todo_prompts.md .env.bak*
+experiments/gpu_results/

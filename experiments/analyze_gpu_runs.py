@@ -208,12 +208,52 @@ def main() -> None:
             per_slice.append(row)
 
     # Production baseline for reference
+    base = {}
     base_cells = []
     for fname, key in slices:
         p = lib.CACHE / "world_v10_fourclass_v9" / fname
         v = json.loads(p.read_text()).get("f1") if p.exists() else None
+        base[key] = v
         base_cells.append(f"{v:>10.4f}" if isinstance(v, (int, float)) else f"{'--':>10}")
     print(f"{'production (seed 42)':<22} " + " ".join(base_cells))
+
+    # ------------------------------------ per-slice sigma and lever verdicts
+    # A lever's delta is only meaningful against run-to-run variance. The
+    # difference of two single runs has variance 2*sigma^2, so the decision band
+    # is 2*sqrt(2)*sigma, not 2*sigma.
+    lib.header("Levers vs seed noise, per slice (macro-F1)")
+    seed_names = [r for r in SEED_RUNS.values() if r]
+    sigmas = {}
+    for _, key in slices:
+        vals = [base[key]] + [r[key] for r in per_slice
+                              if r["run"] in seed_names and r.get(key) is not None]
+        vals = [v for v in vals if isinstance(v, (int, float))]
+        if len(vals) >= 3:
+            sigmas[key] = float(np.std(vals, ddof=1))
+    print("seed sigma:  " + "   ".join(
+        f"{k}={sigmas[k]:.4f} (2*sqrt2*sig={2*np.sqrt(2)*sigmas[k]:.4f})" for k in sigmas))
+
+    lever_rows = []
+    print(f"\n{'run':<22} " + " ".join(f"{s:>18}" for _, s in slices))
+    print("-" * 96)
+    for r in per_slice:
+        if r["run"] in seed_names:
+            continue
+        cells, rec = [], {"run": r["run"]}
+        for _, key in slices:
+            v, b, s = r.get(key), base.get(key), sigmas.get(key)
+            if not isinstance(v, (int, float)) or not isinstance(b, (int, float)) or not s:
+                cells.append(f"{'--':>18}")
+                continue
+            d = v - b
+            band = 2 * np.sqrt(2) * s
+            mark = "*" if abs(d) > band else " "
+            cells.append(f"{d:+.4f}({d/s:+.1f}s){mark:>1}")
+            rec[key] = {"delta": d, "d_over_sigma": d / s, "separates": bool(abs(d) > band)}
+        print(f"{r['run']:<22} " + " ".join(cells))
+        lever_rows.append(rec)
+    print("\n  * = |delta| exceeds the 2*sqrt(2)*sigma band for that slice "
+          "(i.e. distinguishable from seed noise)")
 
     lib.save("gpu_runs_analysis", {
         "frozen_n": len(ids),
@@ -221,6 +261,8 @@ def main() -> None:
         "sigma_auc": sigma_auc, "sigma_macro_f1": sigma_f1,
         "levers": results,
         "per_slice_macro_f1": per_slice,
+        "per_slice_sigma": sigmas,
+        "per_slice_lever_verdicts": lever_rows,
     })
 
 

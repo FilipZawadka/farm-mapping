@@ -222,9 +222,15 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
         git_sync,
         f"cd {code_dir}",
         _run_dir_cmd(cfg, config_name, "pipeline"),
-        f"[ -d {venv} ]"
-        f" && echo 'farm-venv found, skipping install'"
-        f" || (python -m venv {venv}"
+        # Presence of the venv directory is NOT proof it works: a venv built on a
+        # CPU-only pod leaves an import-broken torch ("No module named 'torch._C'")
+        # that a `-d` test happily accepts, and the run then dies at import time.
+        # Health-check it instead, and rebuild only when the check fails.
+        f"({py} -c 'import torch, torchvision; assert torch.cuda.is_available()' 2>/dev/null"
+        f" && echo 'farm-venv healthy, skipping install')"
+        f" || (echo 'farm-venv missing or broken -> rebuilding'"
+        f" && rm -rf {venv}"
+        f" && python -m venv {venv}"
         f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)",
         # An existing farm-venv is NOT reinstalled above, so a stale one may
         # predate the SoftCon weights (torchgeo>=0.7.0). If this config uses the

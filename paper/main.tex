@@ -1,0 +1,1360 @@
+% =====================================================================
+% Global mapping of concentrated animal feeding operations
+% Publication-ready draft. Compile with:
+%     pdflatex main && bibtex main && pdflatex main && pdflatex main
+% Bibliography: references.bib
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{siunitx}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[round,authoryear]{natbib}
+\usepackage[colorlinks=true,allcolors=blue]{hyperref}
+\usepackage{microtype}
+
+\sisetup{detect-all,group-minimum-digits=4}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false
+}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+% Marks a design choice that is currently an inherited default rather than
+% an ablated decision. Every occurrence maps to an entry in the companion
+% experiment plan (paper/experiments_justification_plan.md).
+\newcommand{\unablated}[1]{\textsuperscript{\dag}\,(#1)}
+
+\title{Global Mapping of Concentrated Animal Feeding Operations from
+       Sentinel-2 Imagery: Pipeline, Ablations, and Measurement Validity}
+
+% TODO(author): confirm full author list, affiliations, and corresponding address.
+\author{Filip Zawadka \\ \small Rachel~[surname TBC]}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Concentrated animal feeding operations (CAFOs) are a significant source of
+regional water and air pollution and a focal point for zoonotic-disease
+surveillance, yet no openly available inventory covers them at global scale.
+We describe an end-to-end pipeline that detects and types livestock facilities
+worldwide from freely available Sentinel-2 imagery. The pipeline is two-stage:
+a geometric stage clusters candidate barn-like structures from the Google Open
+Buildings footprint database using morphometric filters, and a convolutional
+stage classifies a 1.28\,km Sentinel-2 patch centred on each candidate cluster
+into \textsc{NotFarm}, \textsc{Poultry}, \textsc{Pigs}, or \textsc{Cattle}. The
+production model is a ResNet-50 initialised from SoftCon, a Sentinel-2--native
+self-supervised backbone, adapted to a nine-channel input (six surface-reflectance
+bands plus three spectral indices) by band-name--matched first-convolution
+transfer. We score \num{157099} of \num{157102} candidate clusters across 167
+countries.
+
+Beyond the system description, we report a systematic experimental record
+covering backbone choice, spatial context, class-imbalance interventions, label
+acquisition strategy, and regularisation. Three findings recur. First, after
+de-duplication and bootstrap confidence intervals, the only comparison that
+separates robustly from noise is Sentinel-2--native self-supervised pretraining
+versus ImageNet initialisation ($\approx\!+0.10$ macro-F1, roughly twice the
+confidence-interval half-width); a nine-channel ImageNet control shows the gain
+is attributable to pretraining rather than band count, and the six leading
+Sentinel-2--native configurations are statistically tied. Second, class-balanced
+sampling is a reproducible in-domain/out-of-domain trade rather than an
+improvement, gaining on held-out data from training countries while losing on
+unseen countries. Third, adding negative labels alone shifts the decision prior
+without improving ranking quality: area under the ROC curve is unchanged while
+both false-positive rate and recall fall together.
+
+We also document, rather than omit, two data-integrity problems that materially
+affected earlier results: a patch-store key misalignment that paired
+approximately 34.6\% of labelled candidates with imagery from the wrong location,
+and a systematic label-source shift between training and evaluation data. We
+report corrected numbers, show that two previously published verdicts reverse
+under clean data, and describe the invariants now enforced in code. Finally, we
+argue that the dominant bottleneck in this problem is measurement rather than
+modelling---at the current evaluation-set size, the 95\% confidence interval on
+macro-F1 is approximately $\pm0.05$, wider than nearly every effect we have
+attempted to measure---and we release a prioritised experiment plan that
+pre-registers the ablations required to justify each remaining design choice.
+\end{abstract}
+
+\noindent\textbf{Keywords:} concentrated animal feeding operations; Sentinel-2;
+self-supervised pretraining; remote sensing; class imbalance; spatial
+cross-validation; measurement validity.
+
+\vspace{1em}
+\noindent\rule{\linewidth}{0.4pt}
+\noindent\footnotesize
+Design choices marked \unablated{E$x$.$y$} are inherited defaults that are
+\emph{not} yet supported by a controlled ablation in this work; each identifier
+refers to the corresponding entry in the companion experiment plan
+(\code{paper/experiments\_justification\_plan.md}).
+\normalsize
+\noindent\rule{\linewidth}{0.4pt}
+
+% =====================================================================
+\section{Introduction}
+% =====================================================================
+
+Intensive livestock production is concentrated in facilities that are large,
+spatially clustered, and visually distinctive from above: long, narrow,
+regularly spaced barns, often accompanied by waste lagoons. These facilities
+are of standing interest to environmental regulators, because manure lagoons
+and land application drive nutrient loading in surface and ground water; to
+public-health agencies, because high-density confinement is a recognised
+interface for zoonotic transmission; and to animal-welfare and food-system
+researchers, who need facility counts to estimate populations under
+confinement. In several jurisdictions the necessary inventory does not exist,
+is not public, or is maintained only as an address list without geometry.
+
+Remote sensing is an attractive substitute, and prior work has demonstrated it
+convincingly at national scale. \citet{handannader2019cafo} detect CAFOs in
+North Carolina from aerial imagery and show that model-assisted enforcement
+targeting substantially outperforms complaint-driven inspection.
+\citet{robinson2022poultry} map industrial poultry operations across the
+contiguous United States using high-resolution aerial imagery. Both rely on
+imagery products---sub-metre aerial orthophotography such as the USDA National
+Agriculture Imagery Program---that have no global equivalent. Extending this
+class of system worldwide therefore requires working from a sensor with global,
+repeated, free coverage. Sentinel-2 \citep{drusch2012sentinel2} provides
+10\,m multispectral imagery with a five-day revisit, which is roughly two
+orders of magnitude coarser in area per pixel than the aerial imagery used in
+prior CAFO work. At 10\,m, an individual poultry barn is on the order of
+$2 \times 15$ pixels: the object is resolvable as an oriented bright
+rectangle, but its texture, roof detail, and ventilation hardware are not.
+
+This paper describes a pipeline built around that constraint, and reports what
+we learned attempting to make it work at global scale. Our contributions are:
+
+\begin{enumerate}
+  \item \textbf{A two-stage global pipeline.} Rather than searching imagery
+  exhaustively, we first generate candidates geometrically from the Google Open
+  Buildings footprint database \citep{sirko2021openbuildings} using
+  morphometric filters calibrated on a clean reference region, then classify a
+  Sentinel-2 patch centred on each candidate cluster. This converts a global
+  dense-search problem into a \num{157102}-candidate classification problem
+  spanning 167 countries (Section~\ref{sec:data}).
+
+  \item \textbf{A four-class facility-typing model.} We adapt a
+  Sentinel-2--native self-supervised ResNet-50 \citep{wang2024softcon,he2016resnet}
+  to a nine-channel input via band-name--matched first-convolution transfer, and
+  train it to distinguish \textsc{NotFarm}, \textsc{Poultry}, \textsc{Pigs}, and
+  \textsc{Cattle} (Section~\ref{sec:methods}).
+
+  \item \textbf{A systematic ablation record with honest uncertainty.} We report
+  a controlled comparison of backbones, spatial context, imbalance
+  interventions, label-acquisition strategies, and regularisation---and we
+  report which of these survive bootstrap confidence intervals after
+  de-duplication. Most do not (Section~\ref{sec:results}).
+
+  \item \textbf{A data-integrity and measurement-validity methodology.} We
+  document a patch-store key misalignment that silently contaminated
+  approximately 34.6\% of labelled candidates for several months, quantify its
+  effect, show that it \emph{reversed} two experimental verdicts, and describe
+  the code-level invariants that now prevent it. We also quantify a
+  train/evaluation label-source shift and the resulting ceiling on measurable
+  progress (Section~\ref{sec:validity}).
+\end{enumerate}
+
+A theme runs through the experimental sections and we state it at the outset:
+for most of this project's history, the measurement apparatus has been less
+precise than the effects being measured. At an evaluation-set size of
+$n=523$, the 95\% confidence interval on macro-F1 is approximately $\pm0.05$,
+while the interventions under test---a different sampler, a different crop
+size, a regularisation bundle---move the metric by $0.01$ to $0.05$. Reporting
+such comparisons as wins would be unjustified. We instead report them as ties,
+identify the single comparison that does separate, and treat improving the
+benchmark as the highest-priority experiment rather than a housekeeping task.
+
+% =====================================================================
+\section{Related work}
+% =====================================================================
+
+\paragraph{CAFO and livestock-facility detection.}
+\citet{handannader2019cafo} established the template for this task: detect
+facilities with a convolutional network over aerial imagery, and evaluate not
+only classification metrics but downstream regulatory utility.
+\citet{robinson2022poultry} scaled poultry-barn detection across the
+contiguous United States, emphasising the operational cost of false positives
+in a screening deployment. Both operate at sub-metre resolution in a single
+country with a reliable registry for supervision. Our work differs on all three
+axes: 10\,m imagery, 167 countries, and heterogeneous supervision that mixes
+national registries with visual annotation. The resolution change in particular
+means our model cannot rely on the fine texture cues available to prior work,
+and our results should be read as a different operating point---broad,
+low-cost, globally uniform screening---rather than as a direct comparison.
+
+\paragraph{Self-supervised pretraining for Earth observation.}
+ImageNet initialisation transfers poorly to multispectral satellite input,
+both because the domain gap is large and because non-RGB bands have no
+pretrained counterpart. A line of work pretrains directly on Sentinel imagery:
+SSL4EO-S12 \citep{wang2023ssl4eo} applies momentum contrast
+\citep{he2020moco} to a large multitemporal Sentinel-1/2 corpus, and SoftCon
+\citep{wang2024softcon} adds multi-label--guided soft contrastive learning,
+reporting stronger performance at equal backbone capacity. TorchGeo
+\citep{stewart2022torchgeo} distributes these weights with band metadata, which
+our first-convolution adaptation depends on. GEO-Bench
+\citep{lacoste2023geobench} provides the standardised comparison we used to
+shortlist candidate backbones, alongside broader multimodal foundation models
+such as DOFA \citep{xiong2024dofa} and CROMA \citep{fuller2023croma}. Common
+downstream benchmarks in this literature---EuroSAT \citep{helber2019eurosat},
+BigEarthNet \citep{sumbul2019bigearthnet}---are scene-classification tasks with
+large, balanced label sets, which is worth noting: our task is an object-centred,
+severely imbalanced classification with a long tail, and we find the benchmark
+ranking only partially predicts our downstream ranking.
+
+\paragraph{Long-tailed recognition.}
+Our label distribution is severely skewed (roughly 50:1 \textsc{Poultry} to
+\textsc{Cattle} in training). We evaluate the standard interventions:
+class-weighted and class-balanced sampling; classifier retraining with a frozen
+representation (cRT) \citep{kang2020decoupling}; train-time logit adjustment
+and its post-hoc variant \citep{menon2021logit}; and focal loss
+\citep{lin2017focal}. A recurring result in that literature---that decoupling
+representation learning from classifier balancing outperforms end-to-end
+resampling---holds only partially here, and we report the conditions under
+which it flipped sign.
+
+\paragraph{Regularisation.}
+We tested label smoothing \citep{szegedy2016rethinking} together with cutout
+\citep{devries2017cutout} and a longer schedule. \citet{muller2019labelsmoothing}
+note that label smoothing improves accuracy and calibration in many settings but
+can distort the confidence structure of the penultimate representation; our
+measurement was that it worsened expected calibration error on the slice we care
+about, which we report in Section~\ref{sec:v10}. Optimisation follows decoupled
+weight decay \citep{loshchilov2019adamw} with cosine annealing
+\citep{loshchilov2017sgdr}.
+
+\paragraph{Evaluation validity in spatial problems.}
+Random train/test splits over spatially autocorrelated data inflate apparent
+performance, because held-out points are often near training points
+\citep{roberts2017spatialcv,ploton2020spatial}. This applies directly to our
+setting, where candidate clusters are dense in production regions; we quantify
+the exposure in Section~\ref{sec:measurement}. We report bootstrap confidence
+intervals \citep{efron1987bootstrap}, expected calibration error
+\citep{guo2017calibration}, and Matthews correlation coefficient
+\citep{chicco2020mcc} alongside F1, the last because our slices vary widely in
+class balance.
+
+% =====================================================================
+\section{Data}
+\label{sec:data}
+% =====================================================================
+
+\subsection{Candidate generation}
+\label{sec:candidates}
+
+The unit of analysis is a \emph{building cluster}, not a pixel or a tile. This
+choice is what makes global coverage tractable: instead of running a detector
+over all land area, we enumerate structures that are already known to exist and
+filter them to those that are barn-shaped.
+
+We start from Google Open Buildings \citep{sirko2021openbuildings}, a
+continental-scale footprint database derived from high-resolution satellite
+imagery, tiled by H3 hexagons at resolution~3. Footprints in urban areas are
+removed. For each remaining building we compute morphometric descriptors---area,
+length, width, aspect ratio, orientation---and apply the filters in
+Table~\ref{tab:morphometry}. Thresholds were calibrated on the Delmarva
+peninsula (``DMV''), a dense, well-documented United States broiler-production
+region that serves throughout this project as the clean reference distribution.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Morphometric candidate-selection parameters. Values are the operative
+thresholds in the candidate-generation stage. The parameter set was calibrated
+on the Delmarva reference region and applied globally without per-country
+tuning.}
+\label{tab:morphometry}
+\begin{tabular}{llr}
+\toprule
+Parameter & Meaning & Value \\
+\midrule
+\code{MIN\_SIZE} / \code{MAX\_SIZE} & building footprint area & \SI{850}{}--\SI{5200}{\metre\squared} \\
+\code{MIN\_AR} / \code{MAX\_AR}     & aspect ratio (elongation) & 4.5--15 \\
+\code{MIN\_WIDTH} / \code{MAX\_WIDTH} & building width & \SI{10}{}--\SI{28}{\metre} \\
+\code{MAX\_LENGTH}                  & building length & \SI{205}{\metre} \\
+\code{BLDG\_SEP}                    & edge-linkage clustering distance & \SI{50}{\metre} \\
+\code{CLUSTER\_MIN}                 & minimum buildings per cluster & 2 \\
+\code{TOTAL\_AREA}                  & minimum total cluster footprint & \SI{2500}{\metre\squared} \\
+\code{DIST\_TO\_WATER}              & lagoon-proximity search radius & \SI{150}{\metre} \\
+\code{WATER\_PROBABILITY}           & Dynamic World water threshold & 0.1 \\
+\code{FARM\_TO\_CLUSTER}            & registry-point to cluster match radius & \SI{100}{\metre} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Buildings whose edges lie within \SI{50}{\metre} of one another are linked into
+a single cluster; clusters of at least two buildings and at least
+\SI{2500}{\metre\squared} total footprint become candidates. A lagoon feature is
+derived from Dynamic World \citep{brown2022dynamicworld} water probability
+within \SI{150}{\metre} of the cluster. Registry points are attached to clusters
+within \SI{100}{\metre}.
+
+This stage is deliberately high-recall and low-precision with respect to the
+final task: it produces \num{157102} candidate clusters worldwide, of which
+roughly three quarters of the labelled subset are in fact farms. That base rate
+is important context for every metric in this paper, and we state it explicitly
+in Section~\ref{sec:if}: a trivial classifier that labels every candidate as a
+farm achieves precision $0.767$ at recall $1.0$. The convolutional stage must be
+evaluated against that baseline, not against a 50\% prior.
+
+\subsection{Labels}
+\label{sec:labels}
+
+Labels come from two qualitatively different sources, and the distinction
+matters enough that we return to it in Section~\ref{sec:labelshift}.
+
+\emph{Registry labels} are derived from official or curated facility lists:
+United States state registries (including the Delmarva and Iowa sets), Mexican
+and Chilean official registries, Thailand and Brazil facility data. A registry
+point within \SI{100}{\metre} of a candidate cluster labels that cluster with
+the registry's species, subject to animal-count thresholds (\num{20000} birds
+for poultry, 400 head for pigs) to exclude smallholdings.
+
+\emph{Visual labels} are assigned by human annotators inspecting high-resolution
+basemap imagery for a candidate, and include explicitly adjudicated hard
+negatives---greenhouses, warehouses, industrial sheds, plastic-covered
+horticulture---that the morphometric stage cannot reject.
+
+The upstream taxonomy is finer than the model's (it distinguishes broiler, egg,
+and unspecified poultry, and carries \textsc{Mixed}, \textsc{Other},
+\textsc{Unknown}, \textsc{PigsOrPoultry}, and \textsc{Ambiguous} categories). We
+map it to four classes: \textsc{NotFarm}, \textsc{Poultry} (all poultry
+subtypes), \textsc{Pigs}, and \textsc{Cattle}. Rows whose upstream label is
+ambiguous or non-specific are dropped from supervised training but retained with
+label $-1$ so that they are still scored at inference. Table~\ref{tab:labels}
+gives the composition of the current label release.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Label composition of the current release (\code{all\_clusters\_v9}).
+\num{157102} clusters across 167 countries, of which \num{32214} carry a label.}
+\label{tab:labels}
+\begin{tabular}{lrlr}
+\toprule
+Upstream label & $n$ & Upstream label & $n$ \\
+\midrule
+NotFarm                  & \num{13778} & Poultry: Eggs      & \num{774}  \\
+Poultry: Unspecified     & \num{8005}  & Cattle             & \num{228}  \\
+Poultry: Meat Chickens   & \num{4265}  & Ambiguous          & \num{182}  \\
+Pigs                     & \num{2576}  & PigsOrPoultry      & \num{111}  \\
+Farm: Unknown            & \num{2172}  & Mixed              & \num{103}  \\
+                         &             & Other              & \num{20}   \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The label set was built in rounds, and the rounds are themselves an experimental
+variable (Section~\ref{sec:labelrounds}). Round~2 added \num{962} adjudicated
+\textsc{NotFarm} corrections across 106 countries---exclusively negatives.
+Round~3 (in two stages) promoted farm positives from the qualitative-evaluation
+pool into training under a per-country cap, first at 50 and then at 70 per
+country, with an 80:20 train/validation assignment.
+
+\subsection{Splits}
+\label{sec:splits}
+
+Split assignment is explicit and upstream: each cluster carries a
+\code{cnn\_split\_assigned} value, and the training code treats it as the single
+source of truth. No random split is computed, and no country whitelist or
+region-balancing logic is applied on this path. This replaced an earlier
+random-number-generator--based splitter whose behaviour changed between runs and
+which, at one point, silently dropped an entire class (Section~\ref{sec:validity}).
+
+The splits carry distinct semantics rather than being three draws from one pool:
+
+\begin{description}\itemsep2pt
+  \item[\textnormal{\textsc{train} / \textsc{val} / \textsc{test}}] Standard
+  fitting, model selection, and held-out measurement. \textsc{test} is drawn
+  from the same five heavily-labelled countries as \textsc{train}, so it is the
+  most optimistic slice.
+  \item[\textsc{eval}] Held-out clusters from training countries, weighted
+  toward visually adjudicated cases. Measures in-domain generalisation to harder,
+  differently-sourced labels.
+  \item[\textsc{generalization}] Countries with \emph{zero} training rows
+  (Bangladesh, Albania, Nigeria, DR Congo). The out-of-domain slice, and the one
+  closest to deployment conditions.
+  \item[\textsc{qual\_eval}] A large adjudicated pool used for false-positive
+  and recall estimation at scale. Comparisons across model versions use
+  \textsc{qual\_eval\_common}, the intersection of the pool across all versions,
+  which no model in the comparison trained on.
+  \item[\textsc{predict}] Unlabelled candidates---the deployment target.
+\end{description}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Split composition of the current release. \textsc{Pigs} is absent from
+\textsc{generalization} entirely, and \textsc{Cattle} support is in the single
+digits on every held-out slice; both facts bound what can be claimed about those
+classes.}
+\label{tab:splits}
+\begin{tabular}{lrrrrrr}
+\toprule
+Split & NotFarm & Poultry & Pigs & Cattle & Total & Countries \\
+\midrule
+\textsc{train}          & \num{2750} & \num{7616} & \num{1576} & 153 & \num{12095} & 139 \\
+\textsc{val}            & 621        & \num{1662} & 356        & 33  & \num{2672}  & 113 \\
+\textsc{test}           & 425        & \num{1344} & 300        & 25  & \num{2094}  & 5   \\
+\textsc{eval}           & 135        & 319        & 62         & 7   & 523         & 5   \\
+\textsc{generalization} & 171        & 251        & 0          & 4   & 426         & 4   \\
+\textsc{qual\_eval}     & \num{9676} & \num{1852} & 282        & 6   & \num{11816} & 132 \\
+\textsc{predict}        & \multicolumn{4}{c}{unlabelled} & \num{124888} & 167 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Training data are geographically concentrated: the United States contributes
+\num{6760} training rows, Mexico \num{1614}, Thailand 575, Brazil 454, and Chile
+330, with a long tail of roughly 134 further countries contributing small
+numbers. This concentration is why country-level rebalancing is disabled
+(Section~\ref{sec:imbalance}) and why the \textsc{generalization} slice is the
+metric we weight most heavily in deployment decisions.
+
+A parallel column, \code{if\_split\_assigned}, defines splits for the geometric
+Isolation Forest baseline (Section~\ref{sec:if}); the convolutional pipeline
+passes it through to outputs but never trains on it.
+
+\subsection{Imagery}
+\label{sec:imagery}
+
+For each candidate we extract a \(128 \times 128\) pixel patch at \SI{10}{\metre}
+resolution---a \SI{1.28}{\kilo\metre} square---centred on the cluster centroid.
+The patch grid is constructed in the local UTM zone with an explicit affine
+transform, and pixels are requested directly from Google Earth Engine
+\citep{gorelick2017gee} as arrays.
+
+The source collection is \code{COPERNICUS/S2\_SR\_HARMONIZED}, harmonised
+Level-2A surface reflectance \citep{mainknorn2017sen2cor}. We take an
+\emph{annual median composite} over calendar year 2023, filtering scenes to
+\code{CLOUDY\_PIXEL\_PERCENTAGE} below 15\%\unablated{E1.3}. Six bands are
+retained---B2, B3, B4 (visible), B8 (NIR), B11, B12 (SWIR)---and three
+normalised-difference indices are computed server-side:
+\[
+  \mathrm{NDVI}=\frac{B8-B4}{B8+B4},\quad
+  \mathrm{NDBI}=\frac{B11-B8}{B11+B8},\quad
+  \mathrm{NDWI}=\frac{B3-B8}{B3+B8},
+\]
+giving a nine-channel \code{float32} tensor per candidate\unablated{E1.1}. NDVI
+separates barn roofs from surrounding vegetation, NDBI responds to built
+surfaces, and NDWI is intended to expose the manure-lagoon signature that also
+motivates the geometric water feature.
+
+The annual median is a deliberate trade. It suppresses cloud, haze, and
+transient agricultural change, and yields one stable image per site; it also
+discards all phenological and temporal signal, which we expect is part of the
+ceiling on distinguishing facility types (Section~\ref{sec:limitations}). A
+per-pixel scene-classification cloud mask and a least-cloudy compositing mode
+are implemented but were never evaluated: the one run configured to test them
+was lost to a storage-quota failure and never repeated\unablated{E1.3}.
+
+Patches are cached on disk keyed by candidate identifier and by an
+\emph{imagery configuration hash}---a digest over bands, indices, compositing
+mode, cloud threshold, and date range. The hash is both the cache key and the
+inference-time filter, ensuring a model is never scored on patches built under a
+different imagery configuration.
+
+\paragraph{Cloud-blocked candidates and imagery tiers.}
+Under the primary configuration, \num{2197} candidates could not be imaged at
+all: in chronically cloudy tropical regions (Ecuador, Malaysia, Indonesia,
+Brazil, the Philippines, Colombia, Panama, Costa Rica), \emph{no} Sentinel-2
+scene in calendar 2023 passes a 15\% scene-cloud filter, so the composite is
+empty. Retrying under the identical configuration recovered three. We therefore
+relaxed the imagery configuration in two stages and recorded the provenance of
+each recovered patch in an \code{imagery\_tier} field
+(Table~\ref{tab:tiers}). Widening the window to 2022--2024 while holding the
+cloud threshold at 15\% recovered \num{1810} candidates at full quality; relaxing
+the threshold to 60\% recovered the remaining 384. Predictions on the
+relaxed-cloud tier skew heavily toward \textsc{Poultry} (approximately 79\%),
+consistent with the out-of-distribution bias discussed in
+Section~\ref{sec:deployment}, and are flagged as screening-quality rather than
+treated as equivalent to the primary tier.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Imagery tiers in the full-world release. Coverage is
+\num{157099}/\num{157102} candidates (99.998\%).}
+\label{tab:tiers}
+\begin{tabular}{llr}
+\toprule
+Tier & Imagery configuration & Candidates \\
+\midrule
+\code{primary\_2023}      & 2023 median, scene cloud $<15\%$      & \num{154905} \\
+\code{clean\_2022\_2024}  & 2022--2024 median, scene cloud $<15\%$ & \num{1810}   \\
+\code{relaxed\_cloud60}   & 2022--2024 median, scene cloud $<60\%$ & 384          \\
+\midrule
+\multicolumn{2}{l}{\textit{Total scored}} & \num{157099} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{Methods}
+\label{sec:methods}
+% =====================================================================
+
+\subsection{Architecture and channel adaptation}
+\label{sec:arch}
+
+The production model is a ResNet-50 \citep{he2016resnet} initialised from
+SoftCon \citep{wang2024softcon}, a Sentinel-2--native backbone pretrained with
+multi-label--guided soft contrastive learning and distributed through TorchGeo
+\citep{stewart2022torchgeo}. We also evaluate SSL4EO-S12 MoCo weights
+\citep{wang2023ssl4eo,he2020moco} and ImageNet initialisation; results are in
+Section~\ref{sec:backbone}. Backbone selection was shortlisted using GEO-Bench
+linear-probe results \citep{lacoste2023geobench}, on which SoftCon leads
+comparable backbones at 64-pixel input\unablated{E1.6}.
+
+Adapting a pretrained backbone to nine channels is not a matter of widening the
+first convolution. The pretrained weights are ordered by the Sentinel-2 13-band
+Level-1C convention, \([B1, B2, B3, B4, B5, B6, B7, B8, B8A, B9, B10, B11, B12]\),
+whereas our input is \([B2, B3, B4, B8, B11, B12, \mathrm{NDVI}, \mathrm{NDBI},
+\mathrm{NDWI}]\). Copying weights positionally would place the pretrained
+\(B1\) filter on our \(B2\) input, and so on---a silent misalignment across every
+channel. We therefore adapt by \emph{band name}: each input channel that has a
+pretrained counterpart receives that counterpart's filter weights, and the three
+index channels, which have none, are initialised to the mean of the pretrained
+first-layer weights. The classification head is replaced with a fresh linear
+layer over the 2048-dimensional pooled feature.
+
+\subsection{Preprocessing and augmentation}
+
+Each sample is loaded, non-finite values are zero-filled, spectral bands are
+scaled by \(1/10000\) to surface reflectance, augmentation is applied, the patch
+is centre-cropped to 64 pixels (\SI{640}{\metre})\unablated{E1.2}, the channel
+subset is taken, and per-channel standardisation is applied.
+
+Two normalisation regimes exist because the backbones demand different ones.
+SSL4EO MoCo weights expect raw scaled reflectance with no standardisation;
+SoftCon expects per-band \(z\)-scoring, which is its official transform. Per-channel
+statistics are computed once over 512 randomly drawn training patches with
+augmentation disabled, persisted to disk, and reloaded at inference---so that a
+scoring shard uses the statistics of the run that trained the checkpoint, never
+its own.
+
+The augmentation recipe (Table~\ref{tab:augs}) is applied only to training
+samples. It was assembled incrementally and has never been ablated
+term-by-term\unablated{E1.5}. One inconsistency is worth flagging: per-band gain
+jitter perturbs the spectral bands, but the index channels are \emph{not}
+recomputed afterwards, so NDVI, NDBI, and NDWI are mildly inconsistent with the
+bands they were derived from in roughly 30\% of training samples. A
+\code{recompute\_indices} option exists and is disabled.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Training augmentation recipe. Cutout is disabled in the production
+model; it was enabled only in the rejected regularisation bundle
+(Section~\ref{sec:v10}). No term in this table has been ablated individually.}
+\label{tab:augs}
+\begin{tabular}{llll}
+\toprule
+Augmentation & Probability & Parameters & Applies to \\
+\midrule
+Horizontal flip        & 0.5  & ---                       & all channels \\
+Vertical flip          & 0.5  & ---                       & all channels \\
+Rotation $90^\circ k$  & 0.75 & $k \in \{1,2,3\}$         & all channels \\
+Continuous rotation    & 0.3  & $\pm 15^\circ$, reflect   & all channels \\
+Random resized crop    & 0.3  & scale $0.8$--$1.0$        & all channels \\
+Brightness jitter      & 0.5  & $\times[0.85, 1.15]$      & spectral only \\
+Per-band gain jitter   & 0.3  & $\times[0.95, 1.05]$      & spectral only \\
+Gaussian noise         & 0.3  & $\sigma = 0.02$           & spectral only \\
+Channel dropout        & 0.1  & $\leq 1$ channel zeroed   & spectral only \\
+Cutout \emph{(off)}    & ---  & $2 \times 16$\,px holes   & all channels \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training}
+\label{sec:training}
+
+The canonical recipe, held byte-identical across the label-round series so that
+data effects are not confounded with recipe effects, is:
+
+\begin{lstlisting}[caption={Canonical training configuration (production model).},captionpos=b]
+model:
+  architecture: resnet50_softcon
+  hub_name: SENTINEL2_ALL_SOFTCON
+  pretrained_band_order: [B1,B2,B3,B4,B5,B6,B7,B8,B8A,B9,B10,B11,B12]
+  num_classes: 4
+  input_channels: 9
+  freeze_backbone_epochs: 5
+  class_names: [NotFarm, Poultry, Pigs, Cattle]
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler: cosine
+  early_stopping_patience: 10
+  checkpoint_metric: val_f1
+  normalization: per_channel
+  crop_center_px: 64
+  balanced_class_sampling: false
+  upsample_minority_regions: false
+  class_weight: null
+  seed: 42
+  mixed_precision: true
+inference:
+  threshold: 0.5
+  confidence_tiers: {high: 0.9, medium: 0.7, low: 0.4}
+\end{lstlisting}
+
+Optimisation uses AdamW \citep{loshchilov2019adamw} with cosine annealing
+\citep{loshchilov2017sgdr}\unablated{E1.4}. The backbone is frozen for the first
+five epochs while the fresh head converges; at unfreezing, the optimiser is
+rebuilt with the learning rate scaled by $0.1$ and a fresh cosine schedule.
+Model selection maximises validation macro-F1 rather than minimising validation
+loss, on the grounds that loss is dominated by the majority class in a
+50:1-imbalanced problem\unablated{E1.7}. Mixed precision is enabled for training
+but deliberately \emph{disabled} at inference, because half-precision perturbs
+probabilities at the $10^{-3}$ level and can flip \code{argmax} on near-ties,
+breaking bit-comparability with published releases.
+
+The loss is cross-entropy. Optional variants---class weighting, focal loss
+\citep{lin2017focal}, and train-time logit adjustment
+\citep{menon2021logit}---are implemented and evaluated in
+Section~\ref{sec:imbalance}; the production model uses none of them.
+
+Every run is evaluated after training by reloading the best checkpoint and
+scoring each held-out slice separately, with per-country breakdowns written for
+the \textsc{eval}, \textsc{generalization}, and \textsc{qual\_eval} slices. All
+runs use a single seed\unablated{E0.3}; we have no variance estimate over seeds
+anywhere in the experimental record, which is a material weakness we return to
+in Section~\ref{sec:measurement}.
+
+\subsection{Inference and deployment}
+\label{sec:inference}
+
+Scoring loads the patch metadata table, filters to the current imagery hash,
+validates patch locations (below), reconstructs the exact training transform,
+and runs the model. For the four-class model the prediction is \code{argmax} and
+the full probability vector is persisted, which allows any downstream
+binary farm/not-farm analysis to be recomputed as \(1 - P(\textsc{NotFarm})\)
+without rescoring. Confidence tiers at $0.9/0.7/0.4$ support triage in the
+review interface. Test-time augmentation over the eight dihedral transforms is
+implemented but has never been enabled in a published run\unablated{E1.8}.
+
+Full-world scoring is sharded by country across compute nodes using a greedy
+longest-processing-time partition, with each shard writing to a distinct output
+path; a merge step recombines them.
+
+\paragraph{Patch-location validation.}
+Before any training or scoring run, every patch is checked against the
+\emph{current} coordinates of its candidate: the haversine distance between the
+coordinates at which the patch was extracted and the candidate's present
+centroid must be under \SI{250}{\metre}. Rows exceeding it are dropped, and if
+more than 5\% of rows are stale the run aborts rather than proceeding. This
+guard exists because of the incident described in Section~\ref{sec:geofix}, and
+it is the single most important piece of defensive code in the pipeline.
+
+\subsection{Geometric baseline}
+\label{sec:if}
+
+A parallel, purely geometric model provides a baseline that uses no imagery. An
+Isolation Forest \citep{liu2008isolation,pedregosa2011sklearn} (500 estimators,
+contamination $0.05$) is fitted on seven cluster-level morphometric features:
+median building area, median length, number of unique orientations, pairwise
+morphological distance, water area, mean built probability, and water proportion.
+It is fitted \emph{only} on the \num{1200}-row Delmarva reference set, making it a
+one-class template-similarity model: it scores how closely a cluster resembles a
+clean United States broiler complex.
+
+This baseline is informative because it isolates what geometry alone can do. On
+\num{15489} labelled clusters, in binary farm-versus-not terms
+(Table~\ref{tab:ifcnn}), it reaches ROC-AUC $0.862$ against the convolutional
+model's $0.963$. The operational gap is larger than the AUC gap suggests: at
+recall $0.95$, the Isolation Forest achieves precision $0.818$ while the
+convolutional model achieves $0.959$, removing 86\% of non-farms against the
+Isolation Forest's 30\%. A convex blend ($0.2$ geometric, $0.8$ convolutional)
+improves average precision slightly to $0.9884$; using the Isolation Forest as a
+\emph{sequential prefilter} before the convolutional model is strictly dominated
+by simply thresholding the convolutional model. We therefore retain it as a
+passthrough column and a diagnostic, not as a pipeline stage.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Geometric baseline versus the convolutional model, binary
+farm-versus-not, on \num{15489} labelled clusters. The always-predict-farm row
+is the base rate implied by the candidate-generation stage and is the correct
+reference point for all precision figures in this paper.}
+\label{tab:ifcnn}
+\begin{tabular}{lrrrr}
+\toprule
+Model & ROC-AUC & Avg.\ precision & Precision @ recall $0.95$ & Non-farms removed \\
+\midrule
+Always predict farm      & ---    & 0.767  & 0.767 & 0\% \\
+Isolation Forest (geometry) & 0.862 & 0.952 & 0.818 & 30\% \\
+CNN (imagery)            & 0.963  & 0.979  & 0.959 & 86\% \\
+Blend ($0.2$/$0.8$)      & ---    & 0.988  & ---   & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{Experiments and results}
+\label{sec:results}
+% =====================================================================
+
+We report two experimental series. The first varies the \emph{model} (backbone,
+context, imbalance treatment) on a three-class taxonomy
+(\textsc{NotFarm}/\textsc{Poultry}/\textsc{OtherFarm}). The second holds the
+architecture byte-identical and varies the \emph{labels}, on the four-class
+taxonomy; the production model comes from this series. Unless noted, three-class
+numbers are macro-F1 and four-class numbers are binary farm-versus-not ROC-AUC,
+the latter because it is threshold-free and comparable across slices with very
+different class balance.
+
+\subsection{Backbone and spatial context}
+\label{sec:backbone}
+
+Table~\ref{tab:backbone} reports the backbone matrix. Each row differs from the
+SSL4EO reference in exactly one respect, and the data and patch configuration
+are byte-identical across rows.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Backbone and context ablation, three-class macro-F1. \textsc{eval} is
+in-domain held-out; \textsc{gen} is unseen countries. The ImageNet 9-channel row
+is the control that separates pretraining from band count. Caveat: these are
+single-seed point estimates on the contaminated patch store
+(Section~\ref{sec:geofix}); see Table~\ref{tab:geofix} for corrected magnitudes
+and the text for the confidence-interval analysis.}
+\label{tab:backbone}
+\begin{tabular}{llrrr}
+\toprule
+Run & Initialisation / change & \textsc{test} & \textsc{eval} & \textsc{gen} \\
+\midrule
+\code{v8\_three\_class}    & ImageNet, 4 channels          & 0.626 & 0.403 & 0.397 \\
+\code{v9\_imagenet9ch}     & ImageNet, 9 channels          & 0.617 & 0.393 & 0.382 \\
+\code{v8\_ssl4eo}          & SSL4EO-S12 MoCo, 9 channels   & 0.723 & 0.489 & 0.407 \\
+\code{v9\_softcon}         & SoftCon, 9 channels           & 0.724 & \textbf{0.504} & 0.402 \\
+\code{v9\_ctx128}          & SSL4EO, 128\,px context       & 0.729 & 0.484 & \textbf{0.440} \\
+\code{v9\_softcon\_ctx128} & SoftCon $+$ 128\,px context   & \textbf{0.751} & 0.492 & 0.378 \\
+\code{v8\_crt}             & SSL4EO $+$ cRT head           & 0.727 & 0.494 & 0.426 \\
+\code{v8\_logitadj}        & SSL4EO $+$ logit-adjusted CE  & 0.572 & 0.470 & 0.330 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Pretraining, not band count, drives the win.}
+Sentinel-2--native pretraining improves \textsc{eval} macro-F1 from $0.403$ to
+$0.489$--$0.504$. The obvious confound is that the ImageNet baseline used four
+channels while the self-supervised runs used nine, so the gain might be extra
+spectral information rather than better initialisation. The
+\code{v9\_imagenet9ch} run resolves this: holding the nine-channel input fixed
+and reverting only the initialisation gives $0.393$ \textsc{eval}---statistically
+indistinguishable from the four-channel ImageNet run at $0.403$, and far below
+every Sentinel-2--native run. The additional bands are close to worthless to an
+ImageNet-initialised network and valuable to a Sentinel-2--pretrained one, which
+is the expected behaviour if the pretrained filters encode multispectral
+structure the ImageNet filters cannot represent. We regard this as the single
+most robust experimental result in the project.
+
+\paragraph{Everything else is a tie.}
+A validity audit re-ran these comparisons after de-duplicating candidates (the
+patch store can hold multiple rows per candidate, which inflated every split)
+and attaching bootstrap confidence intervals \citep{efron1987bootstrap}.
+De-duplication alone drops the SoftCon \textsc{eval} figure from $0.504$ to
+$0.469$. After correction, the six leading Sentinel-2--native configurations
+fall in the range $0.466$--$0.470$ with confidence-interval half-widths of
+roughly $\pm0.05$: a statistical tie. The SoftCon-versus-SSL4EO difference of
+$0.015$ is well inside noise. Only the Sentinel-2--native versus ImageNet
+contrast, at roughly $+0.10$, exceeds twice the interval width. The production
+choice of SoftCon over SSL4EO is therefore \emph{not} justified by our own
+measurements; it rests on external benchmark evidence
+\citep{lacoste2023geobench} and is a candidate for reversal or confirmation
+under a better benchmark\unablated{E1.6}.
+
+\paragraph{Context does not compose.}
+Increasing the crop from 64 to 128 pixels (\SI{640}{\metre} to
+\SI{1.28}{\kilo\metre}) improves out-of-domain macro-F1 for SSL4EO
+($0.407 \rightarrow 0.440$). A larger blind slice was previously reported to show
+a $+0.047$ macro-F1 advantage for the wider-context model, but that result does
+not survive re-testing: on the \num{1072} blind rows we can pair exactly across
+the two models, the difference is $+0.002$ pooled (95\% CI $[-0.044, +0.048]$,
+$p = 0.93$) and $+0.017$ when averaged over countries to neutralise composition
+skew. The direction still favours larger context in both statistics, but the
+magnitude is an order of magnitude smaller than reported and nowhere near
+separating. We therefore treat the context question as \emph{open} rather than
+nearly-settled\unablated{E1.2}. Combining SoftCon with 128-pixel
+context does \emph{not} stack: \textsc{gen} falls to $0.378$, below either lever
+alone. We do not have a mechanistic explanation, and note that the production
+model retains the 64-pixel crop largely for historical reasons. Given that
+larger context wins on the two most deployment-like slices, this is among the
+highest-value re-tests in the experiment plan\unablated{E1.2}.
+
+\subsection{Class-imbalance interventions}
+\label{sec:imbalance}
+
+We evaluated five distinct mechanisms. None is used in the production model, and
+the reasoning for each rejection differs.
+
+\emph{Class-weighted cross-entropy} was tried with weights $[1.0, 0.7, 2.0]$ and
+had no measurable effect---though this run coincided with the split bug of
+Section~\ref{sec:validity} and is uninterpretable.
+
+\emph{Classifier retraining} (cRT) \citep{kang2020decoupling}, freezing the
+backbone and retraining the head with balanced sampling, improved out-of-domain
+macro-F1 by $+0.019$ on the SSL4EO backbone but \emph{reduced} it by $-0.020$ on
+SoftCon. A sign flip of this size on $n=273$ is inside sampling noise; the
+honest reading is that cRT's effect here is unmeasured, not that it is
+backbone-dependent.
+
+\emph{Train-time logit adjustment} \citep{menon2021logit} reached
+\textsc{eval} $0.470$ with minority-class F1 comparable to the unadjusted
+baseline, but at a $0.15$ cost in \textsc{test} macro-F1. A post-hoc
+$\tau$ sweep over the trained models found the optimum at $\tau = 0$ for the
+best models, i.e.\ no adjustment---indicating the limiting factor is the
+representation, not the decision rule.
+
+\emph{Adaptive batch normalisation} \citep{li2018adabn}, recomputing
+normalisation statistics on target-domain data, \emph{hurt}: out-of-domain
+macro-F1 fell from $0.407$ to $0.383$. This is a useful negative: it suggests
+the out-of-domain gap is not radiometric domain shift, which AdaBN addresses,
+but morphological and label-distributional difference, which it does not.
+
+\emph{Class-balanced sampling} is the intervention we studied most carefully,
+because it appeared to be a win under contaminated data and then reappeared as a
+trade under clean data. Measured twice on independent experiments, it improves
+\textsc{eval} by $+0.027$ and $+0.046$ while reducing \textsc{generalization} by
+$-0.016$ and $-0.054$. The mechanism is legible: \textsc{eval} is drawn from the
+same training countries whose composition the sampler reweights, whereas
+\textsc{generalization} contains no training rows at all, so upweighting the
+minority classes optimises the slice that shares the training distribution at
+the expense of the slice that does not. The clearest diagnostic is the
+\textsc{Cattle} class: balanced sampling raises \textsc{test} \textsc{Cattle} F1
+from $0.556$ to $0.636$ while dropping \textsc{qual\_eval} \textsc{Cattle} F1
+from $0.250$ to $0.000$---memorisation of 153 training examples rather than a
+learned category. Farm recall on inference countries falls from 89.3\% to 78.3\%.
+Since deployment targets countries with no training data, we keep balancing off.
+
+We tested whether this trade is instead an artefact of the spatial leakage
+documented in Section~\ref{sec:measurement}---if the in-domain gain came from
+clusters neighbouring training data, it would shrink once those rows were
+removed. It does not: restricting \textsc{eval} to clusters at least
+\SI{1.28}{\kilo\metre} from any training cluster \emph{widens} the gain from
+$+0.046$ to $+0.084$ macro-F1, while on the leaked rows the balanced model is
+$0.092$ \emph{worse}. The out-of-domain loss is likewise undiminished by
+filtering ($-0.054$ macro-F1; $-0.019$ ROC-AUC, $p = 0.038$). The trade is a
+genuine property of the intervention.
+
+Country-level rebalancing is disabled permanently for a structural reason: 26
+training countries have two or fewer rows, and inverse-frequency country weights
+would draw a single-row country roughly 100 times per epoch.
+
+\subsection{Label acquisition}
+\label{sec:labelrounds}
+
+Holding the architecture and recipe byte-identical, we varied only the label
+set. Table~\ref{tab:labelrounds} reports binary farm-versus-not ROC-AUC per
+slice.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Label-round series, binary farm-versus-not ROC-AUC. Architecture and
+training recipe are byte-identical across columns; only the label set differs.
+Bracketed figures are 95\% bootstrap confidence intervals. \code{v9} is the
+production model; \code{v10} is the rejected regularisation bundle
+(Section~\ref{sec:v10}).}
+\label{tab:labelrounds}
+\begin{tabular}{lrrrrrr}
+\toprule
+Slice & $n$ & v6 & v7 & v8 & v9 & v10 \\
+\midrule
+\textsc{test}              & \num{2094}  & 0.991 & 0.993 & 0.993 & \textbf{0.994} [.989,.997] & 0.993 \\
+\textsc{eval}              & 523         & 0.903 & 0.903 & \textbf{0.920} [.888,.949] & 0.911 & 0.903 \\
+\textsc{generalization}    & 426         & 0.824 [.747,.894] & 0.843 & 0.909 & \textbf{0.915} [.885,.942] & 0.903 \\
+\textsc{qual\_eval\_common} & \num{11437} & 0.966 & 0.954 & 0.981 & \textbf{0.983} [.980,.986] & 0.979 \\
+ALB\,+\,COD (hardest OOD)   & 179         & 0.777 & 0.772 & 0.912 & \textbf{0.916} & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Round~2: negatives alone shift the prior without improving the model.}
+Round~2 added \num{962} adjudicated \textsc{NotFarm} corrections across 106
+countries and nothing else. Superficially it looked like a large success: the
+false-positive rate on the hardest out-of-domain pair fell from 66.2\% to 5.0\%.
+But recall collapsed in step, from 92.5\% to 42.5\%. Three diagnostics together
+establish that no ranking improvement occurred. ROC-AUC was flat or slightly
+worse ($0.777 \rightarrow 0.772$ on ALB\,+\,COD; $0.979 \rightarrow 0.910$ on
+BGD\,+\,NGA). At a \emph{matched} false-positive rate, recall was identical
+(95.0\% for both models). And mean predicted farm probability fell for true
+negatives ($0.091 \rightarrow 0.021$) \emph{and} for true positives
+($0.846 \rightarrow 0.568$)---a uniform downward shift, not sharpened
+separation. The model learned ``unfamiliar country implies not a farm.''
+One-sided labels teach a prior, not a feature. This is the most transferable
+methodological lesson in our record: any label campaign that adds only one class
+should be evaluated with threshold-free and matched-operating-point metrics,
+because threshold-dependent metrics will show a spurious improvement.
+
+\paragraph{Round~3: balanced promotion is what actually helped.}
+Adding \num{1740} farm \emph{positives} from the adjudicated pool, capped per
+country, improved ranking on every slice: ALB\,+\,COD $0.772 \rightarrow 0.912$,
+BGD\,+\,NGA $0.910 \rightarrow 0.936$, \textsc{qual\_eval} $0.952 \rightarrow
+0.981$. Against the round-1 baseline, the \textsc{qual\_eval} false-positive rate
+fell from 4.9\% to 3.6\% \emph{with} recall rising from 86.8\% to 88.9\%---a
+genuine Pareto improvement, in contrast to round~2's trade. Per-class,
+\textsc{Pigs} F1 gained $+0.124$.
+
+\paragraph{The per-country cap is not a sensitive knob.}
+Raising the cap from 50 to 70 promoted a further \num{1963} rows and changed
+essentially nothing: ALB\,+\,COD $0.912 \rightarrow 0.916$, BGD\,+\,NGA
+$0.936 \rightarrow 0.937$, \textsc{qual\_eval} unchanged at $0.983$,
+\textsc{test} $0.993 \rightarrow 0.994$. Re-testing this on a purpose-built blind
+benchmark of \num{11365} rows across 131 countries (Section~\ref{sec:measurement})
+converts that observation into a properly powered null result: the paired
+difference between the two label rounds is $-0.0003$ ROC-AUC with a 95\%
+confidence interval of $[-0.0019, +0.0012]$ and $p = 0.715$, which excludes any
+effect larger than about two thousandths of a point. On the same benchmark the
+two earlier rounds separate decisively ($-0.014$ and $-0.031$, both $p < 0.001$),
+confirming the benchmark can detect real differences of this kind. This lever is
+exhausted at the current scale: further promotion from the same adjudicated pool
+is unlikely to help, and the next data investment should change the label
+\emph{distribution} (new regions, new species) rather than its volume.
+
+\subsection{Regularisation bundle}
+\label{sec:v10}
+
+A final experiment combined label smoothing at $0.05$
+\citep{szegedy2016rethinking}, cutout with two 16-pixel holes at probability
+$0.5$ \citep{devries2017cutout}, and a longer schedule (70 epochs, patience 15).
+It was run as a bundle, not as single levers---a design choice we now regard as
+a mistake, since the result cannot be attributed.
+
+The bundle was rejected. Label smoothing \emph{worsened} measured calibration,
+which is the opposite of its usual justification: expected calibration error
+\citep{guo2017calibration} rose from $0.027$ to $0.052$ on
+\textsc{qual\_eval\_common} and from $0.006$ to $0.020$ on \textsc{test}. Cutout
+did not achieve its stated purpose of improving the data-poor \textsc{Cattle}
+class---one-versus-rest AUC for \textsc{Cattle} on \textsc{test} fell from
+$0.936$ to $0.856$, and the out-of-domain \textsc{Cattle} slice remained at zero
+correct out of four. Cutout is also applied to the full 128-pixel patch before
+the 64-pixel centre crop, so a hole lands inside the visible crop only about a
+quarter of the time per hole, making the effective augmentation rate roughly 22\%
+of samples rather than the nominal 50\%. The one gain, $+0.057$ macro-F1 on
+\textsc{eval}, is on the slice that deployment does not target, and an ensemble
+of the bundle with the production model performed identically to the production
+model alone, indicating no added diversity.
+
+The broader conclusion we drew is that training-recipe tweaks on the current
+label set are exhausted, and that further effort belongs in measurement and data.
+
+\subsection{Calibration and thresholds}
+\label{sec:thresholds}
+
+Miscalibration in this system is domain-conditional, which has a direct
+operational consequence. Re-tuning a \emph{global} decision threshold is a
+no-op: the validation-optimal farm threshold is $0.481$ against a default of
+$0.5$, worth at most $2.5$ percentage points of out-of-domain recall. But
+applying a \emph{lower threshold specifically out of domain} recovers
+substantial recall at little false-positive cost, as the model is
+systematically under-confident on unseen countries
+(Table~\ref{tab:thresholds}). Pre-registering the rule ``adopt the lowest
+threshold buying at least five points of recall for at most five points of
+false-positive rate'' selects $0.4$ ($+0.055$ recall for $+0.018$ false-positive
+rate); $0.3$ narrowly fails it at $+0.053$ false-positive rate. We therefore
+recommend deployment with a domain-conditional threshold: the default in training
+countries, and $0.4$ for screening in countries with no training data.
+
+We also tested \emph{per-country} thresholds, fitted leave-one-country-out so
+that no country's threshold sees its own rows, and they are clearly worse than a
+single out-of-domain constant: pooled, they buy $+0.114$ recall at a cost of
+$+0.170$ false-positive rate, against $+0.055$ for $+0.018$ from the fixed
+threshold. With only four out-of-domain countries each fit rests on three others
+and is unstable---one country's fitted threshold collapses to $0.05$ and triples
+its false-positive rate. Per-country calibration is not viable until many more
+labelled out-of-domain countries exist.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Threshold sweep for the production model on the out-of-domain slice.
+Lowering the threshold from $0.5$ to $0.3$ buys 9 points of recall for 5 points
+of false-positive rate---a favourable trade when the output feeds human review.}
+\label{tab:thresholds}
+\begin{tabular}{lrrr}
+\toprule
+Threshold & Recall & False-positive rate & Precision \\
+\midrule
+0.2 & 0.894 & 0.211 & 0.864 \\
+0.3 & 0.855 & 0.170 & 0.883 \\
+0.4 & 0.820 & 0.135 & 0.901 \\
+0.5 (default) & 0.765 & 0.117 & 0.907 \\
+0.6 & 0.718 & 0.094 & 0.920 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Per-class performance}
+\label{sec:perclass}
+
+Table~\ref{tab:perclass} gives per-class results for the production model. Two
+structural limits are visible. \textsc{Pigs} is systematically confused with
+\textsc{Poultry}---the dominant error mode on \textsc{eval}, unmoved by every
+intervention we tried---which is unsurprising at \SI{10}{\metre}, where the two
+facility types differ mainly in barn dimensions and lagoon configuration.
+\textsc{Cattle} is not measurable: 153 training rows, 25 in \textsc{test}, seven
+in \textsc{eval}, four in \textsc{generalization}, six in \textsc{qual\_eval}.
+Its out-of-domain one-versus-rest AUC of $0.485$ is indistinguishable from
+chance, and any \textsc{Cattle} number in this paper should be read as a
+placeholder awaiting labels rather than as a measurement.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Per-class one-versus-rest AUC and F1 for the production model, with
+support. \textsc{Pigs} is absent from the out-of-domain slice; \textsc{Cattle}
+support is too small everywhere for its numbers to carry information.}
+\label{tab:perclass}
+\begin{tabular}{lrrrrrrrr}
+\toprule
+& \multicolumn{2}{c}{\textsc{test}} & \multicolumn{2}{c}{\textsc{eval}}
+& \multicolumn{2}{c}{\textsc{gen}} & \multicolumn{2}{c}{\textsc{qual\_eval}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}
+Class & AUC & F1 & AUC & F1 & AUC & F1 & AUC & F1 \\
+\midrule
+NotFarm & 0.994 & 0.923 & 0.911 & 0.752 & 0.915 & 0.789 & 0.983 & 0.976 \\
+Poultry & 0.975 & 0.939 & 0.855 & 0.836 & 0.906 & 0.787 & 0.975 & 0.817 \\
+Pigs    & 0.965 & 0.795 & 0.775 & 0.421 & \multicolumn{2}{c}{---} & 0.942 & 0.472 \\
+Cattle  & 0.936 & 0.556 & 0.837 & 0.400 & 0.485 & 0.000 & 0.908 & 0.286 \\
+\midrule
+Support & \multicolumn{2}{c}{\num{2094}} & \multicolumn{2}{c}{523}
+        & \multicolumn{2}{c}{426} & \multicolumn{2}{c}{\num{11437}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Global deployment}
+\label{sec:deployment}
+
+The production model scores \num{157099} of \num{157102} candidates across 167
+countries (Table~\ref{tab:tiers}), of which approximately 68\% are predicted to
+be farms of some type---consistent with the 76.7\% farm base rate of the
+candidate pool after removing predicted negatives.
+
+Per-country out-of-domain AUC spans a wide range and is the most honest summary
+of where the system can be trusted: South Africa $1.000$, Argentina $0.996$,
+Portugal $0.996$, France $0.995$, Germany $0.981$, Australia $0.982$, Poland
+$0.980$, Romania $0.979$, Hungary $0.973$, Italy $0.969$, Czechia $0.968$,
+Bangladesh $0.947$, Albania $0.942$, Nigeria $0.917$, DR Congo $0.814$.
+Performance degrades with distance from the training distribution in both the
+geographic and the construction-practice sense: the weakest results are in
+regions where facility architecture, roofing materials, and surrounding land
+cover differ most from the North American and European examples that dominate
+training. Separate analyses identified near-total failures in specific regions
+(Russia, Ukraine, Malaysia, India, Turkey) where farm-class F1 falls below
+$0.3$; these countries should be treated as unsupported by the current release.
+
+Label-round changes also move deployment-scale outputs substantially. Over the
+\num{154905} commonly scored points, predicted farms went from \num{113137}
+(73.0\%) under round~1 to \num{87265} (56.3\%) under round~2 and \num{107013}
+(69.1\%) under round~3---a reminder that the round~2 prior shift was not a
+subtle statistical artefact but a change that would have removed roughly a
+quarter of the world's predicted facilities had it shipped.
+
+% =====================================================================
+\section{Data integrity and measurement validity}
+\label{sec:validity}
+% =====================================================================
+
+This section reports failures. We include it because two of them invalidated
+published conclusions, and because the mechanisms are general enough to recur in
+any pipeline that joins imagery to labels through an identifier.
+
+\subsection{Patch-store key misalignment}
+\label{sec:geofix}
+
+\paragraph{Discovery.} A cluster in Mexico was scored as a farm with probability
+$0.963$. Manual inspection confirmed a real egg-production facility at the
+coordinates the \emph{patch} was extracted from---but the current label file
+placed that cluster identifier several hundred kilometres away, on a
+\textsc{NotFarm}.
+
+\paragraph{Mechanism.} Patches were cached and joined by cluster identifier and
+imagery hash, with no spatial check, and extraction skipped any identifier
+already present in the store. An upstream re-run of the candidate-merge process
+renumbered 93.5\% of cluster identifiers---geometry and labels were unchanged;
+only the identifier-to-cluster mapping churned. From that moment, every join
+silently paired a candidate with another candidate's imagery, and the skip-cache
+guaranteed the wrong patch was never re-extracted.
+
+\paragraph{Blast radius.} Measuring displacement between each patch's extraction
+coordinates and its candidate's current coordinates showed \num{34.3}--34.6\% of
+labelled-country rows displaced by more than \SI{250}{\metre}, with median
+displacement in the hundreds of kilometres, against a $0.04\%$ control rate in
+unaffected regions. Contamination was spread across \emph{all} splits, including
+\textsc{eval} and \textsc{generalization}, at country-level rates of 21\%
+(Thailand, Bangladesh) to 48\% (Chile). In one binary run, 949 of \num{2495}
+rows were mislocated, and of the 384 for which the original location's label was
+recoverable, 84 (22\%) were outright image/label contradictions. Every run
+between the incident and the fix trained and evaluated on approximately
+one-third wrong-image pairs; all metrics from that period are \emph{floors},
+not estimates.
+
+\paragraph{Correction and consequences.} We re-keyed the store by location,
+re-extracted roughly \num{24700} stale patches, and reduced residual staleness to
+$0.31\%$. Table~\ref{tab:geofix} shows the effect of re-running affected
+configurations on clean data. The corrections are large---larger than any
+modelling intervention in this paper---and they resolved a standing puzzle in
+which an early model appeared to outperform its successors: the apparent
+regression coincided exactly with the onset of contamination.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Effect of correcting the patch-store misalignment, three-class
+macro-F1. The correction is worth more than any modelling intervention we
+tested, and it reversed two experimental verdicts.}
+\label{tab:geofix}
+\begin{tabular}{lrrrrrr}
+\toprule
+& \multicolumn{3}{c}{Contaminated} & \multicolumn{3}{c}{Corrected} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Run & \textsc{test} & \textsc{eval} & \textsc{gen} & \textsc{test} & \textsc{eval} & \textsc{gen} \\
+\midrule
+\code{v9\_softcon} & 0.712 & 0.462 & 0.400 & 0.890 & 0.631 & 0.486 \\
+\code{v9\_ctx128}  & 0.710 & 0.469 & 0.415 & 0.902 & 0.641 & 0.443 \\
+\code{v3\_three\_class} & 0.526 & 0.399 & 0.298 & 0.716 & 0.523 & 0.397 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two verdicts reversed under clean data. Class-balanced sampling had been recorded
+as ``the boundary moves but quality does not''; on corrected data it produced a
+genuine $+0.027$ \textsc{eval} gain with \textsc{Pigs}/\textsc{Poultry} confusion
+falling from 52\% to 38\%. Larger context had been recorded as non-additive with
+SoftCon; on corrected data it gave a partial $+0.017$. Neither reversal would
+have been detectable without re-running.
+
+\paragraph{Invariants now enforced.} Three code-level rules resulted. First,
+patch locations are validated against current candidate coordinates before every
+run, with a hard abort above 5\% staleness (Section~\ref{sec:inference}).
+Second, the candidate-merge step asserts identifier stability---at least 99.9\%
+overlap and centroid drift under $10^{-6}$ degrees---and refuses to join
+otherwise. Third, upstream cluster identifiers are treated as \emph{ephemeral}:
+they may be used within a single data pull but never to join across pulls.
+Location, not identity, is the durable key.
+
+\subsection{Label-source shift}
+\label{sec:labelshift}
+
+The gap between \textsc{test} and \textsc{eval} performance is not primarily a
+generalisation gap; it is a change in what the labels mean.
+
+For the minority farm class, training labels are 98\% registry-derived and 56\%
+United States, while evaluation labels are 80\% visually adjudicated and 3\%
+United States. The two are different measurement instruments applied to
+different populations. The same holds for the negative class: the large majority
+of training \textsc{NotFarm} rows are pipeline-generated negatives with no
+recorded label source, whereas nearly all evaluation \textsc{NotFarm} rows are
+visually confirmed hard negatives---structures a human considered plausibly
+farm-like before rejecting them. \textsc{NotFarm} F1 falls from $0.73$ on
+\textsc{test} to $0.50$ on \textsc{eval} largely for this reason.
+
+Holding the split fixed and varying only the labelling instrument makes the
+effect directly visible. Within \textsc{eval}, the production model scores
+ROC-AUC $1.000$ on the 73 registry-labelled rows and $0.909$ on the 449
+visually-labelled ones; the headline \textsc{eval} figure of $0.911$ is therefore
+essentially the visual-label figure, while \textsc{test}, at 84\% registry, is
+essentially the registry figure. The same ordering holds in every split
+(\textsc{test} $-0.043$ ROC-AUC, \textsc{qual\_eval} $-0.019$), and it is
+near-zero within \textsc{train} itself ($-0.002$): the model fits both label
+sources equally well during training and generalises worse only on visual ones.
+That pattern points to visually-adjudicated rows being intrinsically harder
+cases---hard negatives and ambiguous sites---rather than to registry labels being
+noisy, which argues for acquiring more visual labels for training rather than
+down-weighting registry ones.
+
+The consequence is that \textsc{test}-to-\textsc{eval} degradation should not be
+read as overfitting, and interventions aimed at overfitting will not close it.
+The dominant evaluation error mode---minority farm types predicted as
+\textsc{Poultry}---persists at similar rates whether the evaluation row was
+registry-labelled (18\% correct) or visually labelled (24\% correct), which
+indicates a genuine representational limit rather than a pure annotation
+artefact\unablated{E2.6}.
+
+\subsection{Measurement limits}
+\label{sec:measurement}
+
+We close with the constraint that shaped this project's second half.
+
+\paragraph{The benchmark is smaller than the effects.} At $n=523$, the 95\%
+confidence interval on \textsc{eval} macro-F1 is approximately $\pm0.05$.
+Detecting a difference $\Delta$ requires roughly $n \approx 524 \cdot
+(0.05/\Delta)^2$: about \num{1455} rows for $\Delta = 0.03$, \num{3275} for
+$\Delta = 0.02$, and \num{13100} for $\Delta = 0.01$. Nearly every intervention
+in Section~\ref{sec:results} falls in the $0.01$--$0.05$ range. Most of our
+experiments were, strictly, underpowered.
+
+\paragraph{Splits are not spatially blocked.} Measuring the distance from every
+held-out cluster to the nearest of the \num{12062} training clusters shows
+substantial exposure: 16.6\% of \textsc{eval} clusters, 38.0\% of \textsc{test},
+and 32.5\% of \textsc{val} lie within one patch width
+(\SI{1.28}{\kilo\metre}) of a training cluster, so their imagery partially
+overlaps training imagery. The spatial cross-validation literature
+\citep{roberts2017spatialcv,ploton2020spatial} is unambiguous that this inflates
+apparent performance, and it does here: splitting each slice at the
+\SI{1.28}{\kilo\metre} boundary, the production model scores ROC-AUC $0.961$ on
+near \textsc{eval} rows against $0.905$ on far ones ($+0.056$), and $0.993$
+against $0.964$ on \textsc{val} ($+0.028$). All in-domain figures in this paper
+should be read as optimistic by roughly that margin. Two slices are exempt:
+\textsc{generalization} has effectively no exposure (0.5\% within
+\SI{1.28}{\kilo\metre}, median distance \SI{116}{\kilo\metre}) and
+\textsc{qual\_eval} has 3.5\%, which is why we weight those two most heavily.
+This measurement bounds evaluation contamination only; the model still trained on
+the nearby clusters, so a spatially blocked \emph{retrain} is still
+required\unablated{E0.2}.
+
+\paragraph{Duplicates inflated every split.} The patch store can hold multiple
+rows per candidate; de-duplication reduces \textsc{eval} macro-F1 by
+approximately $0.03$. Figures in Table~\ref{tab:backbone} are pre-de-duplication
+point estimates and are comparable to one another but not to post-correction
+figures.
+
+\paragraph{No variance estimates.} Every run in the record uses a single seed.
+We cannot distinguish a real $0.02$ effect from seed noise anywhere in this
+paper, because we have never measured seed noise\unablated{E0.3}.
+
+\paragraph{A blind benchmark closes most of this gap.} The measurement problem is
+largely solvable with data already in hand. We froze a benchmark of \num{11365}
+labelled clusters spanning 131 countries, drawn from the adjudicated
+\textsc{qual\_eval} pool and further filtered to clusters at least
+\SI{1.28}{\kilo\metre} from any training cluster, so that it is blind in both
+senses: no model trained on these rows, and none is a spatial near-duplicate of a
+training row. Its 95\% bootstrap confidence half-width is $0.0030$ on farm
+ROC-AUC and $0.0061$ on macro-F1---roughly sixteen times tighter than the
+$\pm0.05$ of the 523-row evaluation slice, and enough to make differences of
+$0.01$ comfortably detectable. Two results in this paper were re-derived on it
+(Sections~\ref{sec:backbone} and~\ref{sec:labelrounds}), and it should be the
+default slice for future comparisons. Its own limitation is composition: it is
+dominated by \textsc{NotFarm} rows and contains only six \textsc{Cattle}
+examples, so it resolves farm-versus-not questions well and minority-type
+questions not at all.
+
+% =====================================================================
+\section{Limitations and planned work}
+\label{sec:limitations}
+% =====================================================================
+
+Beyond the measurement issues above, four limits are structural.
+
+\emph{Resolution.} At \SI{10}{\metre}, facility \emph{typing} is
+information-limited. Pigs-versus-poultry discrimination rests on barn dimensions
+and lagoon presence, both marginal at this scale, and the confusion has not
+responded to any modelling intervention.
+
+\emph{Temporal collapse.} A single annual median discards phenology, seasonal
+lagoon dynamics, and construction change---signals that are plausibly
+discriminative and are currently unavailable to the model by construction.
+
+\emph{Cattle.} With 153 training examples, the class is unlearnable and
+unmeasurable. Either a targeted labelling campaign or a merge into a coarser
+category is required; retaining it as a nominal fourth class with placeholder
+metrics is the least defensible option.
+
+\emph{Candidate-stage recall.} Everything downstream is bounded by the
+morphometric filters of Table~\ref{tab:morphometry}, which were calibrated on
+United States broiler complexes. Facilities that are smaller, differently
+proportioned, or built with materials that fragment footprint extraction are
+invisible to the entire pipeline, and this failure mode is invisible to our
+metrics because such sites never become candidates. We have no estimate of
+candidate-stage recall outside the reference region, and consider obtaining one
+the most important unmeasured quantity in the system.
+
+The companion document \code{paper/experiments\_justification\_plan.md}
+enumerates the experiments required to convert the inherited defaults flagged
+with a dagger throughout this paper into justified choices. It is organised in
+three tiers: measurement upgrades that must precede everything else (blind
+benchmark adoption, spatially blocked splits, seed-variance estimation,
+double-annotation to bound label noise); ablations of un-justified core choices
+(band set, spatial context, cloud handling, optimiser, augmentation,
+architecture scale, checkpoint metric, test-time augmentation); and
+deployment-level decisions (domain-conditional thresholds, ensembling,
+geometry fusion, \textsc{Cattle} strategy). Each entry specifies a hypothesis, an
+exact configuration delta, and a pre-registered decision rule with a minimum
+detectable effect size.
+
+% =====================================================================
+\section{Conclusion}
+% =====================================================================
+
+We have described a global pipeline for detecting and typing livestock
+facilities from Sentinel-2 imagery, covering \num{157099} candidate clusters
+across 167 countries, and reported its experimental record in full. The
+methodological findings we would carry to a similar project are: that
+sensor-native self-supervised pretraining is worth substantially more than
+architectural or optimisation tuning, and is the only effect in our record that
+clearly exceeds measurement noise; that class-balanced sampling optimises the
+slice sharing the training distribution at the expense of the slice that does
+not, and should be evaluated on out-of-domain data before adoption; that
+one-sided label campaigns shift decision priors while leaving ranking quality
+unchanged, and must be evaluated with threshold-free metrics; and that a silent
+identifier-join failure cost us more accuracy than every modelling improvement
+we made, which argues for validating spatial joins geometrically rather than by
+identifier as a matter of routine.
+
+The system is deployed and its outputs are published, with per-country
+performance reported so that users can judge where it is trustworthy. Its
+principal weakness is not the model but the benchmark: at the current evaluation
+size, most of the comparisons we would like to make are unmeasurable. Enlarging
+and spatially blocking the benchmark is therefore the first item of planned
+work, and a precondition for the rest.
+
+% =====================================================================
+\appendix
+\section{Reproducibility}
+% =====================================================================
+
+\paragraph{Artefacts.} Each release comprises a scored candidate table
+(GeoParquet, EPSG:4326 points, carrying per-class probabilities, confidence
+tier, split membership, label source, and the imagery tier of
+Table~\ref{tab:tiers}), a GeoJSON and CSV export, a metrics summary, and a copy
+of the exact training configuration. Releases are registered in a manifest
+consumed by an interactive review map.
+
+\paragraph{Software.} PyTorch \citep{paszke2019pytorch} with TorchGeo
+\citep{stewart2022torchgeo} for pretrained Sentinel-2 backbones; scikit-learn
+\citep{pedregosa2011sklearn} for the Isolation Forest baseline; Google Earth
+Engine \citep{gorelick2017gee} for imagery extraction. Experiment tracking uses
+MLflow.\footnote{\url{https://mlflow.org}} Candidate tiling uses
+H3.\footnote{\url{https://h3geo.org}}
+
+\paragraph{Compute.} Training runs on a single NVIDIA A40; a full training run
+of the production configuration completes within a few hours. Full-world
+inference is sharded by country across nodes.
+
+\paragraph{Determinism.} Random seeds are fixed at 42 for PyTorch, NumPy, and the
+dataset sampler, with per-worker seeding for augmentation. Inference runs in
+full precision to keep published probabilities bit-reproducible.
+
+\paragraph{Non-paper data sources.} Registry supervision derives from public
+facility registries and from the Farm Transparency
+Project\footnote{\url{https://www.farmtransparency.org}} facility database,
+supplemented by visual annotation.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

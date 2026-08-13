@@ -39,17 +39,36 @@ ORDER = [
 log = logging.getLogger("fleet")
 
 
-def _api(query: str) -> dict:
+def _api(query: str, retries: int = 5) -> dict:
+    """Query the RunPod GraphQL API, tolerating transient failures.
+
+    The API intermittently returns a body with no "data" key (rate limiting or a
+    server hiccup). Left unhandled that raises KeyError and kills the fleet
+    mid-run -- which already happened once, stranding a created pod that was
+    billing with no work on it.
+    """
     from training.env_loader import load_dotenv
     load_dotenv()
     import os
     key = os.environ["RUNPOD_API_KEY"]
-    out = subprocess.run(
-        ["curl", "-s", "-H", f"Authorization: Bearer {key}", "-H", "Content-Type: application/json",
-         "-X", "POST", "https://api.runpod.io/graphql", "-d", json.dumps({"query": query})],
-        capture_output=True, text=True, check=True,
-    )
-    return json.loads(out.stdout)["data"]
+    last = None
+    for attempt in range(retries):
+        try:
+            out = subprocess.run(
+                ["curl", "-s", "--max-time", "45",
+                 "-H", f"Authorization: Bearer {key}", "-H", "Content-Type: application/json",
+                 "-X", "POST", "https://api.runpod.io/graphql", "-d", json.dumps({"query": query})],
+                capture_output=True, text=True, check=True,
+            )
+            body = json.loads(out.stdout)
+            if "data" in body and body["data"] is not None:
+                return body["data"]
+            last = body.get("errors", body)
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+            last = exc
+        if attempt < retries - 1:
+            time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"RunPod API failed after {retries} attempts: {str(last)[:300]}")
 
 
 def account() -> dict:

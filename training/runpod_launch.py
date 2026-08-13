@@ -351,7 +351,18 @@ def _wait_for_ssh(pod_id: str, runpod, timeout: int = 600) -> tuple[str, int]:
     start = time.time()
     deadline = start + timeout
     while time.time() < deadline:
-        pod = runpod.get_pod(pod_id)
+        # get_pod raises KeyError when the API returns a body with no "data"
+        # (transient rate limiting). That must not abort the wait: the pod is
+        # already created and billing, so giving up here strands it.
+        try:
+            pod = runpod.get_pod(pod_id)
+        except Exception as exc:  # noqa: BLE001 - any API hiccup is retryable here
+            log.warning("  get_pod(%s) failed (%s); retrying", pod_id, type(exc).__name__)
+            time.sleep(10)
+            continue
+        if not pod:
+            time.sleep(10)
+            continue
         # Ports appear under runtime.ports as dicts
         port_list = (pod.get("runtime") or {}).get("ports") or []
         for port_info in port_list:

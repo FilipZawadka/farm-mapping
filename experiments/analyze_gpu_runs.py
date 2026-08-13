@@ -149,11 +149,46 @@ def main() -> None:
                             "n": len(y), "auc": auc, "delta_auc": delta, "ci": list(ci),
                             "p_value": pval, "delta_over_sigma": nsig, "verdict": verdict})
 
+    # ------------------------------------------- per-slice macro-F1 from metrics
+    # The frozen benchmark answers farm-vs-not; the held-out slices are where
+    # minority-type performance shows up, so report both.
+    lib.header("Per-slice macro-F1 (from each run's own metrics files)")
+    slices = [("training_metrics.json", "test"), ("eval_metrics.json", "eval"),
+              ("generalization_metrics.json", "gen"), ("qual_eval_metrics.json", "qual_eval")]
+    print(f"{'run':<22} " + " ".join(f"{s:>10}" for _, s in slices))
+    print("-" * 68)
+    per_slice = []
+    for name in [r for r in SEED_RUNS.values() if r] + list(EXPERIMENT_OF):
+        row = {"run": name}
+        cells = []
+        for fname, key in slices:
+            p = GPU / name / fname
+            if p.exists():
+                try:
+                    row[key] = json.loads(p.read_text()).get("f1")
+                except json.JSONDecodeError:
+                    row[key] = None
+            else:
+                row[key] = None
+            cells.append(f"{row[key]:>10.4f}" if isinstance(row[key], (int, float)) else f"{'--':>10}")
+        if any(row.get(k) is not None for _, k in slices):
+            print(f"{name:<22} " + " ".join(cells))
+            per_slice.append(row)
+
+    # Production baseline for reference
+    base_cells = []
+    for fname, key in slices:
+        p = lib.CACHE / "world_v10_fourclass_v9" / fname
+        v = json.loads(p.read_text()).get("f1") if p.exists() else None
+        base_cells.append(f"{v:>10.4f}" if isinstance(v, (int, float)) else f"{'--':>10}")
+    print(f"{'production (seed 42)':<22} " + " ".join(base_cells))
+
     lib.save("gpu_runs_analysis", {
         "frozen_n": len(ids),
         "seeds": seed_rows,
         "sigma_auc": sigma_auc, "sigma_macro_f1": sigma_f1,
         "levers": results,
+        "per_slice_macro_f1": per_slice,
     })
 
 

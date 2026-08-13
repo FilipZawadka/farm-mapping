@@ -197,7 +197,14 @@ def main() -> None:
             p = GPU / name / fname
             if p.exists():
                 try:
-                    row[key] = json.loads(p.read_text()).get("f1")
+                    j = json.loads(p.read_text())
+                    row[key] = j.get("f1")
+                    # Macro-F1 over the three measurable classes only. Cattle has
+                    # 4-25 held-out rows and swings by up to 0.2 on a seed change,
+                    # so including it makes the headline number mostly noise.
+                    m = [j.get(f"f1_class{i}") for i in range(3)]
+                    row[f"{key}_nocattle"] = (sum(m) / 3) if all(
+                        v is not None for v in m) else None
                 except json.JSONDecodeError:
                     row[key] = None
             else:
@@ -255,6 +262,46 @@ def main() -> None:
     print("\n  * = |delta| exceeds the 2*sqrt(2)*sigma band for that slice "
           "(i.e. distinguishable from seed noise)")
 
+    # ---------------- same comparison with the unmeasurable Cattle class removed
+    lib.header("Levers vs seed noise, Cattle EXCLUDED (mean F1 over NotFarm/Poultry/Pigs)")
+    base_nc = {}
+    for fname, key in slices:
+        p = lib.CACHE / "world_v10_fourclass_v9" / fname
+        if p.exists():
+            j = json.loads(p.read_text())
+            m = [j.get(f"f1_class{i}") for i in range(3)]
+            base_nc[key] = (sum(m) / 3) if all(v is not None for v in m) else None
+
+    sig_nc = {}
+    for _, key in slices:
+        k = f"{key}_nocattle"
+        vals = [base_nc.get(key)] + [r.get(k) for r in per_slice if r["run"] in seed_names]
+        vals = [v for v in vals if isinstance(v, (int, float))]
+        if len(vals) >= 3:
+            sig_nc[key] = float(np.std(vals, ddof=1))
+    print("seed sigma:  " + "   ".join(
+        f"{k}={sig_nc[k]:.4f} (2*sqrt2*sig={2*np.sqrt(2)*sig_nc[k]:.4f})" for k in sig_nc))
+
+    print(f"\n{'run':<22} " + " ".join(f"{s:>18}" for _, s in slices))
+    print("-" * 96)
+    nocattle_rows = []
+    for r in per_slice:
+        if r["run"] in seed_names:
+            continue
+        cells, rec = [], {"run": r["run"]}
+        for _, key in slices:
+            v, b, s = r.get(f"{key}_nocattle"), base_nc.get(key), sig_nc.get(key)
+            if not isinstance(v, (int, float)) or not isinstance(b, (int, float)) or not s:
+                cells.append(f"{'--':>18}")
+                continue
+            d = v - b
+            mark = "*" if abs(d) > 2 * np.sqrt(2) * s else " "
+            cells.append(f"{d:+.4f}({d/s:+.1f}s){mark:>1}")
+            rec[key] = {"delta": d, "d_over_sigma": d / s,
+                        "separates": bool(abs(d) > 2 * np.sqrt(2) * s)}
+        print(f"{r['run']:<22} " + " ".join(cells))
+        nocattle_rows.append(rec)
+
     lib.save("gpu_runs_analysis", {
         "frozen_n": len(ids),
         "seeds": seed_rows,
@@ -263,6 +310,8 @@ def main() -> None:
         "per_slice_macro_f1": per_slice,
         "per_slice_sigma": sigmas,
         "per_slice_lever_verdicts": lever_rows,
+        "per_slice_sigma_nocattle": sig_nc,
+        "per_slice_lever_verdicts_nocattle": nocattle_rows,
     })
 
 

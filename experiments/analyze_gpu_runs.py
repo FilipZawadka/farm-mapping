@@ -149,6 +149,38 @@ def main() -> None:
                             "n": len(y), "auc": auc, "delta_auc": delta, "ci": list(ci),
                             "p_value": pval, "delta_over_sigma": nsig, "verdict": verdict})
 
+    # --------------------------------- which class drives the macro-F1 variance
+    # Macro-F1 averages classes equally, so a class with single-digit support can
+    # swing the headline number far more than the model's behaviour actually moved.
+    lib.header("E0.3  Per-class F1 spread across seeds (source of macro-F1 noise)")
+    seed_files = {42: lib.CACHE / "world_v10_fourclass_v9", **{
+        s: GPU / r for s, r in SEED_RUNS.items() if r}}
+    for slice_file, slice_name in [("eval_metrics.json", "eval"),
+                                   ("qual_eval_metrics.json", "qual_eval"),
+                                   ("training_metrics.json", "test")]:
+        per_class: dict[str, list[float]] = {}
+        macro: list[float] = []
+        for seed, d in sorted(seed_files.items()):
+            p = d / slice_file
+            if not p.exists():
+                continue
+            j = json.loads(p.read_text())
+            macro.append(j.get("f1"))
+            for i, cname in enumerate(lib.CLASS_NAMES):
+                v = j.get(f"f1_class{i}")
+                if v is not None:
+                    per_class.setdefault(cname, []).append(v)
+        if len(macro) < 2:
+            continue
+        print(f"\n  {slice_name} (n_seeds={len(macro)}):")
+        print(f"    {'macro-F1':<10} range {min(macro):.4f}-{max(macro):.4f}  "
+              f"spread {max(macro)-min(macro):.4f}")
+        for cname, vals in per_class.items():
+            if len(vals) < 2:
+                continue
+            print(f"    {cname:<10} range {min(vals):.4f}-{max(vals):.4f}  "
+                  f"spread {max(vals)-min(vals):.4f}")
+
     # ------------------------------------------- per-slice macro-F1 from metrics
     # The frozen benchmark answers farm-vs-not; the held-out slices are where
     # minority-type performance shows up, so report both.

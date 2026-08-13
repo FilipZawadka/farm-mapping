@@ -24,13 +24,16 @@ log = logging.getLogger(__name__)
 
 
 def _steps() -> list[tuple[str, list[str]]]:
+    # -u on every step: these are spawned as subprocesses with stdout redirected
+    # to a file, so Python block-buffers them. Without it, per-epoch progress sits
+    # in a 8 KB buffer and a long run looks hung for its entire duration.
     py = sys.executable
     return [
-        ("candidates", [py, "-m", "training.candidates"]),
-        ("patch_extraction", [py, "-m", "training.patch_extraction"]),
-        ("train", [py, "-m", "training.train"]),
-        ("inference", [py, "-m", "training.inference"]),
-        ("visualize", [py, "-m", "training.visualize"]),
+        ("candidates", [py, "-u", "-m", "training.candidates"]),
+        ("patch_extraction", [py, "-u", "-m", "training.patch_extraction"]),
+        ("train", [py, "-u", "-m", "training.train"]),
+        ("inference", [py, "-u", "-m", "training.inference"]),
+        ("visualize", [py, "-u", "-m", "training.visualize"]),
     ]
 
 

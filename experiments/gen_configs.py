@@ -68,9 +68,15 @@ add("e17_val_loss", "E1.7", "select checkpoint on val_loss instead of val_f1",
     {"training": {"checkpoint_metric": "val_loss"}})
 
 # -------------------------------------------------------------- E1.9 taxonomy
+# label_mode is baked into the candidate CSVs by the `candidates` step, so this
+# run MUST regenerate them (--steps candidates train inference). Writing to its
+# own candidates_dir keeps the shared four-class store intact; without both, the
+# 3-class head meets 4-class labels and training dies on a CUDA device assert
+# (`t >= 0 && t < n_classes`).
 add("e19_three_class", "E1.9", "3-class taxonomy on identical data", {
     "model": {"num_classes": 3, "class_names": ["NotFarm", "Poultry", "OtherFarm"]},
-    "data": {"label_mode": "three_class"}})
+    "data": {"label_mode": "three_class",
+             "candidates_dir": "data/rachel_geometry_candidates/candidates_world_v10_v9_threeclass"}})
 
 # -------------------------------------------------------------- E1.4 optimiser
 add("e14_lr3e-5", "E1.4", "learning rate 3e-5", {"training": {"learning_rate": 3e-5}})

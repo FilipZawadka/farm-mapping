@@ -120,7 +120,9 @@ def main() -> None:
             return
         host, port = ep
         log.info("collecting via %s:%d", host, port)
-        pulled = pull(host, port, ORDER)
+        # e18_tta is inference-only and not in the fleet ORDER, but its parquet
+        # must still come off the volume before the last pod terminates.
+        pulled = pull(host, port, ORDER + ["e18_tta"])
         complete = [n for n in ORDER
                     if (DEST / n / "qual_eval_metrics.json").exists()]
         log.info("runs with completed metrics: %d/%d", len(complete), len(ORDER))

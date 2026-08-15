@@ -32,6 +32,11 @@ EXPERIMENT_OF = {
     "e16_ssl4eo": "E1.6", "e17_val_loss": "E1.7", "e19_three_class": "E1.9",
     "e15_cutout_only": "E1.5", "e15_no_photometric": "E1.5", "e15_geometric_only": "E1.5",
     "e14_lr3e-5": "E1.4", "e14_lr3e-4": "E1.4", "e14_freeze0": "E1.4",
+    # wave 2
+    "e28_combo2": "E2.8", "e28_combo3": "E2.8",
+    "e14_wd0": "E1.4", "e14_wd01": "E1.4", "e14_bs64": "E1.4", "e14_plateau": "E1.4",
+    "e15_no_controt": "E1.5", "e15_no_rrc": "E1.5", "e15_aug_off": "E1.5",
+    "e18_tta": "E1.8",
 }
 DESC = {
     "e12_crop128": "context 128 px", "e12_crop48": "context 48 px",
@@ -41,6 +46,11 @@ DESC = {
     "e19_three_class": "3-class taxonomy", "e15_cutout_only": "cutout only",
     "e15_no_photometric": "no photometric augs", "e15_geometric_only": "geometric augs only",
     "e14_lr3e-5": "lr 3e-5", "e14_lr3e-4": "lr 3e-4", "e14_freeze0": "no freeze phase",
+    "e28_combo2": "freeze0 + 6 bands", "e28_combo3": "freeze0 + 6 bands + 3-class",
+    "e14_wd0": "weight decay 0", "e14_wd01": "weight decay 0.1",
+    "e14_bs64": "batch size 64", "e14_plateau": "plateau scheduler",
+    "e15_no_controt": "no continuous rotation", "e15_no_rrc": "no resized crop",
+    "e15_aug_off": "all augmentation off", "e18_tta": "TTA on v9 checkpoint",
 }
 
 

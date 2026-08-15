@@ -3,6 +3,26 @@
 Companion to `paper/main.tex`. Every choice marked `†(Ex.y)` in the paper maps to an
 entry here.
 
+> **Execution status (2026-08-14) — GPU tier complete.** All 20 GPU configs ran
+> on RunPod (RTX 4090, EU-RO-1, **$23.60 total**). Results in
+> `experiments/RESULTS.md` Part 2, raw in `experiments/results/gpu_runs_analysis.json`.
+>
+> | | Verdict |
+> |---|---|
+> | **E0.3 seed variance** | **eval macro-F1 σ=0.033 (band ±0.095)** — most historical verdicts were inside noise. ~80% of that variance is the 6-row Cattle class. |
+> | **E1.4 optimiser** | **`freeze_backbone_epochs: 0` is the only improvement found** (+0.0045 AUC, +5.9σ). lr 1e-4 already optimal. |
+> | **E1.1 bands** | **Drop NDVI/NDBI/NDWI** — 6 bands ≡ 9 channels; but RGB+NIR is −13σ, so SWIR matters. |
+> | **E1.2 context** | 64 px confirmed. 128 px −5.7σ overall, −8.6σ on generalization. ctx128 belief refuted. |
+> | **E1.6 backbone** | SoftCon confirmed but only −0.0053 AUC for SSL4EO; the "−0.143 macro-F1" was a Cattle artefact. |
+> | **E1.5 augmentation** | Keep the stack (transfer only). Cutout neutral alone. |
+> | **E1.7 / E1.9** | Both exactly 0.0000 — checkpoint metric and taxonomy do not matter. **3-class is free ⇒ merge Cattle.** |
+>
+> **Still open:** E0.4, E2.4, E2.7 (annotation only) and the E0.2 blocked retrain.
+>
+> **Plan-level lesson:** the frozen benchmark is powerful enough that trivial
+> effects reach significance, so decision rules need a practical floor — and
+> deltas must be judged against seed σ, not against zero.
+
 > **Execution status (2026-08-13).** A first pass was run; results are in
 > `experiments/RESULTS.md` with raw output in `experiments/results/*.json`.
 > No GPU was available (pod refused connections; no local CUDA device), so every

@@ -34,6 +34,11 @@ ORDER = [
     "e19_three_class",                                         # E1.9 taxonomy
     "e15_cutout_only", "e15_no_photometric", "e15_geometric_only",  # E1.5 augmentation
     "e14_lr3e-5", "e14_lr3e-4", "e14_freeze0",                 # E1.4 optimiser
+    # ---- wave 2 (2026-08-15). e18_tta is NOT here: inference-only, launched
+    # manually with --steps inference.
+    "e28_combo2", "e28_combo3",                                # E2.8 combos
+    "e14_wd0", "e14_wd01", "e14_bs64", "e14_plateau",          # E1.4b regularisation
+    "e15_no_controt", "e15_no_rrc", "e15_aug_off",             # E1.5b augmentation LOO
 ]
 
 log = logging.getLogger("fleet")

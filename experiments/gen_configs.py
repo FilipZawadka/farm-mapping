@@ -100,6 +100,47 @@ add("e15_cutout_only", "E1.5", "production recipe + cutout as a single lever",
     {"training": {"augmentation": {"cutout": {
         "enabled": True, "probability": 0.5, "n_holes": 2, "hole_size": 16}}}})
 
+# ================= WAVE 2 (2026-08-15): remaining training-config decisions ====
+
+# -- E2.8 combination: do the wave-1 winners compose? Measured individually,
+#    freeze0 was +5.9 sigma and 6-bands was a tie; additivity is NOT assumed
+#    (softcon x ctx128 failed to stack), hence these explicit combo runs.
+add("e28_combo2", "E2.8", "freeze0 + 6 bands (no indices)", {
+    "model": {"freeze_backbone_epochs": 0, "input_channels": 6},
+    "training": {"channel_subset": BANDS6}})
+add("e28_combo3", "E2.8", "freeze0 + 6 bands + 3-class (candidate production recipe)", {
+    "model": {"freeze_backbone_epochs": 0, "input_channels": 6,
+              "num_classes": 3, "class_names": ["NotFarm", "Poultry", "OtherFarm"]},
+    "training": {"channel_subset": BANDS6},
+    "data": {"label_mode": "three_class",
+             "candidates_dir": "data/rachel_geometry_candidates/candidates_world_v10_v9_threeclass"}})
+
+# -- E1.4b regularisation / schedule knobs never tested
+add("e14_wd0", "E1.4", "weight decay 0", {"training": {"weight_decay": 0.0}})
+add("e14_wd01", "E1.4", "weight decay 0.1 (10x)", {"training": {"weight_decay": 0.1}})
+add("e14_bs64", "E1.4", "batch size 64", {"training": {"batch_size": 64}})
+add("e14_plateau", "E1.4", "ReduceLROnPlateau instead of cosine",
+    {"training": {"scheduler": "plateau"}})
+
+# -- E1.5b augmentation, finer grain: the two geometric extras individually,
+#    plus the all-off anchor that bounds the whole stack's value.
+add("e15_no_controt", "E1.5", "drop continuous rotation only",
+    {"training": {"augmentation": {"continuous_rotation": {"enabled": False}}}})
+add("e15_no_rrc", "E1.5", "drop random resized crop only",
+    {"training": {"augmentation": {"random_resized_crop": {"enabled": False}}}})
+add("e15_aug_off", "E1.5", "ALL augmentation disabled",
+    {"training": {"augmentation": {"enabled": False}}})
+
+# -- E1.8 TTA: inference-only on the existing production checkpoint (launch with
+#    --steps inference). Keeps checkpoint/norm_stats_stem, unlike training runs.
+add("e18_tta", "E1.8", "8-fold dihedral TTA on the production v9 checkpoint", {
+    "inference": {"tta": True,
+                  "checkpoint": "data/output/world_v10_fourclass_v9/best_model.pt",
+                  "norm_stats_stem": "world_v10_fourclass_v9"}})
+
+# Configs whose inference block must be preserved verbatim (scoring-only runs).
+KEEP_INFERENCE = {"e18_tta"}
+
 
 def deep_merge(base: dict, delta: dict) -> dict:
     out = copy.deepcopy(base)
@@ -125,8 +166,9 @@ def main() -> None:
         # Score the labeled rows only: that covers every held-out slice including
         # the frozen blind benchmark, and skips ~123k unlabeled candidates.
         cfg["inference"] = deep_merge(cfg.get("inference", {}), {"labeled_only": True})
-        cfg["inference"].pop("checkpoint", None)      # use this run's own best_model.pt
-        cfg["inference"].pop("norm_stats_stem", None)  # use this run's own stats
+        if name not in KEEP_INFERENCE:
+            cfg["inference"].pop("checkpoint", None)      # use this run's own best_model.pt
+            cfg["inference"].pop("norm_stats_stem", None)  # use this run's own stats
 
         path = OUT / f"{name}.yaml"
         path.write_text(

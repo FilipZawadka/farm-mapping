@@ -1489,9 +1489,11 @@ Engine \citep{gorelick2017gee} for imagery extraction. Experiment tracking uses
 MLflow.\footnote{\url{https://mlflow.org}} Candidate tiling uses
 H3.\footnote{\url{https://h3geo.org}}
 
-\paragraph{Compute.} Training runs on a single NVIDIA A40; a full training run
-of the production configuration completes within a few hours. Full-world
-inference is sharded by country across nodes.
+\paragraph{Compute.} Training runs on a single GPU; a full run of the production
+configuration completes in under an hour on an NVIDIA RTX 4090 (approximately
+55 minutes, 60 seconds per epoch). The ablation campaign of
+Section~\ref{sec:ablations} comprised twenty such runs. Full-world inference is
+sharded by country across nodes.
 
 \paragraph{Determinism.} Random seeds are fixed at 42 for PyTorch, NumPy, and the
 dataset sampler, with per-worker seeding for augmentation. Inference runs in

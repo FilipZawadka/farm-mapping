@@ -212,9 +212,12 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
     # .git from a quota-exceeded pod, or no .git at all), fall back to a
     # fresh clone of just `.git/` into /tmp (container disk, no quota), then
     # move it onto the volume. Avoids touching the unrelated data/ tree.
+    # `git fetch` over HTTPS can hang indefinitely (observed: 84 min, GPU idle,
+    # pod billing). Bound it so the re-clone fallback below actually triggers
+    # instead of the pod sitting on a dead network call forever.
     git_sync = (
-        f"(cd {code_dir} && git fetch origin"
-        f" && git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo {branch}))"
+        f"(cd {code_dir} && timeout 300 git fetch origin"
+        f" && timeout 120 git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo {branch}))"
         f" || (echo 're-cloning {code_dir} from {repo} via /tmp'"
         f" && rm -rf {code_dir}/.git /tmp/__repo_tmp"
         f" && git clone --branch {branch} --single-branch --no-checkout {repo} /tmp/__repo_tmp"

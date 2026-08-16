@@ -257,15 +257,25 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
     # `git fetch` over HTTPS can hang indefinitely (observed: 84 min, GPU idle,
     # pod billing). Bound it so the re-clone fallback below actually triggers
     # instead of the pod sitting on a dead network call forever.
+    # Three-tier, and the last tier is the important one: GitHub connectivity from
+    # some datacentres hangs rather than failing (observed repeatedly from
+    # EU-RO-1 -- both fetch and clone stalled with zero bytes transferred). Every
+    # network call is bounded, and if all of them fail the pod proceeds with the
+    # checkout already on the network volume rather than dying or hanging. Code
+    # can then be staged directly onto the volume, taking GitHub off the critical
+    # path entirely.
     git_sync = (
         f"(cd {code_dir} && timeout 300 git fetch origin"
         f" && timeout 120 git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo {branch}))"
         f" || (echo 're-cloning {code_dir} from {repo} via /tmp'"
-        f" && rm -rf {code_dir}/.git /tmp/__repo_tmp"
-        f" && git clone --branch {branch} --single-branch --no-checkout {repo} /tmp/__repo_tmp"
+        f" && rm -rf /tmp/__repo_tmp"
+        f" && timeout 600 git clone --branch {branch} --single-branch --no-checkout {repo} /tmp/__repo_tmp"
+        f" && rm -rf {code_dir}/.git"
         f" && mv /tmp/__repo_tmp/.git {code_dir}/.git"
         f" && rm -rf /tmp/__repo_tmp"
-        f" && cd {code_dir} && git reset --hard origin/{branch})"
+        f" && cd {code_dir} && timeout 120 git reset --hard origin/{branch})"
+        f" || (echo 'WARNING: git sync unavailable; proceeding with the checkout"
+        f" already present on the network volume' && cd {code_dir})"
     )
 
     parts = [

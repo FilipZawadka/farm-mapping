@@ -234,6 +234,10 @@ def _build_deadman_snippet(cfg: PipelineConfig, code_dir: str, config_name: str,
         "     exit 0;"
         "   fi;"
         " done ) >/dev/null 2>&1 &"
+        # Trailing `true` is required: the caller joins parts with " && ", and a
+        # fragment ending in a bare `&` would produce `& &&` -- a syntax error
+        # that kills the whole startup script on line 1.
+        " true"
     )
 
 

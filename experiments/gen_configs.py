@@ -186,3 +186,36 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def _selftest_startup_scripts() -> None:
+    """Bash-parse the generated startup script for every experiment config.
+
+    A malformed fragment kills the pod's script on line 1, and the pod then sits
+    idle and billing with no error visible through the RunPod API. This check is
+    cheap and catches that class of defect before any money is spent.
+    Run: python3 experiments/gen_configs.py --selftest
+    """
+    import subprocess, sys, tempfile
+    sys.path.insert(0, str(REPO))
+    from training.config import load_config, resolve_paths
+    from training import runpod_launch as rl
+
+    bad = []
+    for path in sorted(OUT.glob("*.yaml")):
+        cfg = resolve_paths(load_config(str(path)))
+        name = f"experiments/{path.name}"
+        for steps in (["train", "inference"], ["candidates", "train", "inference"],
+                      ["inference"]):
+            script = rl._build_startup_script(cfg, name, steps=steps)
+            with tempfile.NamedTemporaryFile("w", suffix=".sh") as fh:
+                fh.write(script)
+                fh.flush()
+                r = subprocess.run(["bash", "-n", fh.name], capture_output=True, text=True)
+            if r.returncode != 0:
+                bad.append((path.name, steps, r.stderr.strip()[:200]))
+    if bad:
+        for n, s, e in bad:
+            print(f"  SYNTAX ERROR {n} steps={s}: {e}")
+        raise SystemExit(f"{len(bad)} startup scripts fail bash -n")
+    print(f"startup-script self-test: {len(list(OUT.glob('*.yaml')))} configs x 3 step-sets OK")

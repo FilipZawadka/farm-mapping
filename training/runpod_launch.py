@@ -199,6 +199,44 @@ def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
     return script
 
 
+def _build_deadman_snippet(cfg: PipelineConfig, code_dir: str, config_name: str,
+                           limit_s: int = 1800) -> str:
+    """Background watchdog that terminates the pod if the run makes no progress.
+
+    A pod that launches and then hangs (a stalled `git fetch`, a wedged loader)
+    is indistinguishable from a healthy one via the API: status stays RUNNING and
+    the GPU shows idle only if you look. Seven such pods once billed for 10.5
+    hours each and produced nothing.
+
+    Liveness is the newest mtime across two paths, because neither alone covers
+    the whole run: `/tmp/startup.log` grows during setup but goes quiet for the
+    entire training step (that output is redirected into the run dir), while this
+    run's output dir gets `last_ckpt.pt` rewritten every epoch. Watching only the
+    log would kill healthy training runs; watching only the output dir would miss
+    a hang before training starts.
+
+    The output dir is config-specific, so a sibling pod's activity on the shared
+    volume cannot keep this pod alive.
+    """
+    # Output dirs use the config's BASENAME (config.py sets _config_stem from
+    # Path(yaml_path).stem), not the nested path used for run dirs.
+    stem = os.path.basename(config_name).removesuffix(".yaml")
+    out_dir = f"{code_dir}/data/output/{stem}"
+    return (
+        "( while true; do"
+        "   sleep 300;"
+        f"   FRESH=$(find /tmp/startup.log {out_dir} -newermt '-{limit_s} seconds'"
+        "      2>/dev/null | head -1);"
+        "   if [ -z \"$FRESH\" ]; then"
+        f"     echo \"DEADMAN: no progress for {limit_s}s -- terminating pod\""
+        "       >> /tmp/startup.log 2>&1;"
+        "     runpodctl remove pod \"$RUNPOD_POD_ID\" || true;"
+        "     exit 0;"
+        "   fi;"
+        " done ) >/dev/null 2>&1 &"
+    )
+
+
 def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str] | None = None) -> str:
     """Startup script for a GPU pod: pull code, install deps, then run pipeline."""
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
@@ -229,6 +267,9 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
     parts = [
         _SCRIPT_PREAMBLE,
         _LOAD_RUNPOD_ENV,
+        # Arm the watchdog FIRST, so it also covers the git/venv phase -- that is
+        # exactly where the 10.5-hour hangs occurred.
+        _build_deadman_snippet(cfg, code_dir, config_name),
         # Cache torchgeo/torch pretrained weights on the network volume so
         # repeat pods don't re-download (e.g. SoftCon's ~98 MB checkpoint).
         "export TORCH_HOME=/workspace/.torch",

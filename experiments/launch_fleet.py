@@ -25,20 +25,20 @@ STATE = Path(__file__).resolve().parent / "results" / "fleet_state.json"
 # Ordered by value: seed variance first (it calibrates every other delta),
 # then the levers most likely to change the production recipe.
 ORDER = [
-    "e03_seed43", "e03_seed44", "e03_seed45", "e03_seed46",   # E0.3 seed variance
-    "e12_crop128", "e12_crop48",                               # E1.2 context
-    "e16_ssl4eo",                                              # E1.6 backbone
-    "e11_6bands", "e11_rgb", "e11_rgb_nir", "e11_rgb_ndwi",    # E1.1 bands
-    "e11_recompute_idx",
-    "e17_val_loss",                                            # E1.7 checkpoint metric
-    "e19_three_class",                                         # E1.9 taxonomy
-    "e15_cutout_only", "e15_no_photometric", "e15_geometric_only",  # E1.5 augmentation
-    "e14_lr3e-5", "e14_lr3e-4", "e14_freeze0",                 # E1.4 optimiser
-    # ---- wave 2 (2026-08-15). e18_tta is NOT here: inference-only, launched
-    # manually with --steps inference.
-    "e28_combo2", "e28_combo3",                                # E2.8 combos
-    "e14_wd0", "e14_wd01", "e14_bs64", "e14_plateau",          # E1.4b regularisation
-    "e15_no_controt", "e15_no_rrc", "e15_aug_off",             # E1.5b augmentation LOO
+    "world_v10_fourclass_r4_a_s43",
+    "world_v10_fourclass_r4_a_s44",
+    "world_v10_fourclass_r4_b_s42",
+    "world_v10_fourclass_r4_b_s43",
+    "world_v10_fourclass_r4_b_s44",
+    "world_v10_fourclass_r4_c_s42",
+    "world_v10_fourclass_r4_c_s43",
+    "world_v10_fourclass_r4_c_s44",
+    "world_v10_fourclass_r4_d_s42",
+    "world_v10_fourclass_r4_d_s43",
+    "world_v10_fourclass_r4_d_s44",
+    "world_v10_fourclass_r4_e_s42",
+    "world_v10_fourclass_r4_e_s43",
+    "world_v10_fourclass_r4_e_s44",
 ]
 
 log = logging.getLogger("fleet")
@@ -94,9 +94,14 @@ def save_state(s: dict) -> None:
 
 
 def launch_one(name: str) -> str | None:
-    cfg = f"configs/experiments/{name}.yaml"
-    if not (REPO / cfg).exists():
-        log.error("missing config %s", cfg)
+    # Configs live under either configs/experiments/ (ablation campaign) or
+    # configs/rachel_clusters/ (release + round arms); resolve whichever exists.
+    for d in ("experiments", "rachel_clusters"):
+        cfg = f"configs/{d}/{name}.yaml"
+        if (REPO / cfg).exists():
+            break
+    else:
+        log.error("missing config %s.yaml (looked in configs/experiments and configs/rachel_clusters)", name)
         return None
     log.info("launching %s ...", name)
     p = subprocess.run(

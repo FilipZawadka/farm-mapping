@@ -222,10 +222,15 @@ def _build_deadman_snippet(cfg: PipelineConfig, code_dir: str, config_name: str,
     # Path(yaml_path).stem), not the nested path used for run dirs.
     stem = os.path.basename(config_name).removesuffix(".yaml")
     out_dir = f"{code_dir}/data/output/{stem}"
+    # /workspace/farm-venv is included because a venv rebuild writes ~6.6 GB of
+    # CUDA wheels to the network volume while pip stays SILENT for 20+ minutes.
+    # Watching only the log declared such a pod dead at 30 min and killed a
+    # healthy install mid-write (observed at 26 min with 2 pip processes live).
+    venv_dir = "/workspace/farm-venv"
     return (
         "( while true; do"
         "   sleep 300;"
-        f"   FRESH=$(find /tmp/startup.log {out_dir} -newermt '-{limit_s} seconds'"
+        f"   FRESH=$(find /tmp/startup.log {out_dir} {venv_dir} -newermt '-{limit_s} seconds'"
         "      2>/dev/null | head -1);"
         "   if [ -z \"$FRESH\" ]; then"
         f"     echo \"DEADMAN: no progress for {limit_s}s -- terminating pod\""

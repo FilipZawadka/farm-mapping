@@ -123,8 +123,13 @@ def main() -> None:
         # e18_tta is inference-only and not in the fleet ORDER, but its parquet
         # must still come off the volume before the last pod terminates.
         pulled = pull(host, port, ORDER + ["e18_tta"])
+        # Completion marker: scored_candidates.parquet, the LAST artifact the
+        # pipeline writes (inference step) and the one evaluate_r4.py consumes.
+        # It was qual_eval_metrics.json, but train.py only writes that `if qual_ds`
+        # and round_4 has ZERO qual_eval rows -- so that marker can never appear and
+        # --watch would have polled forever, reporting 0/N with every run finished.
         complete = [n for n in ORDER
-                    if (DEST / n / "qual_eval_metrics.json").exists()]
+                    if (DEST / n / "scored_candidates.parquet").exists()]
         log.info("runs with completed metrics: %d/%d", len(complete), len(ORDER))
 
         if not args.watch or len(complete) == len(ORDER):

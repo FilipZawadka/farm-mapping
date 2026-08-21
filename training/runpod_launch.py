@@ -297,26 +297,38 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
         git_sync,
         f"cd {code_dir}",
         _run_dir_cmd(cfg, config_name, "pipeline"),
-        # Presence of the venv directory is NOT proof it works: a venv built on a
-        # CPU-only pod leaves an import-broken torch ("No module named 'torch._C'")
-        # that a `-d` test happily accepts, and the run then dies at import time.
-        # Health-check it instead, and rebuild only when the check fails.
-        # The venv lives on the SHARED network volume, so a fleet launched
-        # together would otherwise all fail the check at once and concurrently
-        # `rm -rf` and rebuild the same directory -- corrupting it for every pod.
-        # flock serialises that: the first pod rebuilds, the others block on the
-        # lock and then re-test (finding a healthy venv, so they skip). The lock
-        # file sits beside the venv, not inside it, so `rm -rf` cannot delete it.
-        f"({py} -c 'import torch, torchvision; assert torch.cuda.is_available()' 2>/dev/null"
-        f" && echo 'farm-venv healthy, skipping install')"
-        f" || (echo 'farm-venv missing or broken -> waiting for rebuild lock'"
+        # Venv bootstrap on a SHARED network volume. Three failure modes are
+        # deliberately handled here, all of them observed in production:
+        #
+        # 1. A venv directory that EXISTS but whose torch is import-broken (built
+        #    on a CPU-only pod). A `-d` test accepts it and the run dies later.
+        # 2. Concurrent rebuilds: a fleet launched together fails the check at the
+        #    same instant and all `rm -rf` the same directory. flock serialises it.
+        # 3. THE DESTRUCTIVE ONE: a health check that tests for a package the
+        #    requirements do not install (torchvision was missing from
+        #    requirements-train.txt) makes EVERY pod think the venv is broken. Each
+        #    then deletes a venv that other pods are actively running from -- which
+        #    killed a training run 138 minutes in. So the destructive rebuild is now
+        #    reserved for a genuinely broken *torch*; a merely incomplete venv is
+        #    repaired in place with pip install, which cannot break a running pod.
+        f"({py} -c 'import torch; assert torch.cuda.is_available()' 2>/dev/null"
+        f" && echo 'farm-venv torch OK')"
+        f" || (echo 'farm-venv torch missing/broken -> waiting for rebuild lock'"
         f" && flock -w 3600 {venv}.lock -c \""
-        f"{py} -c 'import torch, torchvision; assert torch.cuda.is_available()' 2>/dev/null"
+        f"{py} -c 'import torch; assert torch.cuda.is_available()' 2>/dev/null"
         f" && echo 'another pod rebuilt farm-venv; skipping'"
         f" || (echo 'rebuilding farm-venv (lock held)'"
         f" && rm -rf {venv}"
         f" && python -m venv {venv}"
         f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)\")",
+        # Non-destructive top-up: bring an existing venv up to the current
+        # requirements without ever deleting it. Serialised so two pods do not
+        # pip-install into the same site-packages at once.
+        f"flock -w 1800 {venv}.lock -c \""
+        f"{py} -c 'import torch, torchvision, torchgeo' 2>/dev/null"
+        f" && echo 'farm-venv complete'"
+        f" || (echo 'topping up farm-venv in place (no delete)'"
+        f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)\"",
         # An existing farm-venv is NOT reinstalled above, so a stale one may
         # predate the SoftCon weights (torchgeo>=0.7.0). If this config uses the
         # SoftCon backbone, verify the enum is importable and upgrade in place

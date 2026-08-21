@@ -1,4 +1,7 @@
 torch>=2.1.0
+# required by training/model.py build_densenet AND by the venv health
+# check in runpod_launch; torchgeo does not reliably pull it in.
+torchvision>=0.16.0
 transformers>=4.36.0
 mlflow>=2.10.0
 earthengine-api>=0.1.390

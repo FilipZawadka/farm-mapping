@@ -121,10 +121,26 @@ def launch_one(name: str) -> str | None:
     for line in (p.stdout + p.stderr).splitlines():
         if "Pod created" in line or "Pod launched" in line:
             log.info("  %s", line.strip())
-    for line in (p.stdout + p.stderr).splitlines():
+    out = p.stdout + p.stderr
+    for line in out.splitlines():
         if "Pod launched:" in line:
             return line.split("Pod launched:")[1].strip()
-    log.error("  launch failed for %s:\n%s", name, (p.stdout + p.stderr)[-1500:])
+
+    # Launch failed. A pod is often already CREATED and BILLING at this point --
+    # runpod_launch gives up after ~600s waiting for SSH, but never terminates what
+    # it made. That leaves a pod at $0.74/hr doing nothing AND occupying a fleet
+    # slot (the concurrency cap counts it), which is how a run silently goes missing.
+    stranded = None
+    for line in out.splitlines():
+        if "Pod created:" in line and "id=" in line:
+            stranded = line.split("id=")[1].split()[0].strip()
+    if stranded:
+        log.error("  launch failed for %s -- terminating stranded pod %s", name, stranded)
+        try:
+            _terminate(stranded)
+        except Exception as exc:
+            log.error("  could not terminate %s: %s -- CHECK MANUALLY", stranded, str(exc)[:200])
+    log.error("  launch failed for %s:\n%s", name, out[-1200:])
     return None
 
 
@@ -208,10 +224,24 @@ def cmd_run(max_concurrent: int, budget: float, poll: int) -> None:
         for _ in range(min(slots, len(queue))):
             name = queue.pop(0)
             pod_id = launch_one(name)
-            st["launched"][name] = {"pod_id": pod_id, "ts": time.time()}
-            save_state(st)
             if pod_id:
+                st["launched"][name] = {"pod_id": pod_id, "ts": time.time()}
+                save_state(st)
                 time.sleep(20)  # stagger so concurrent git syncs don't collide
+            else:
+                # Retry rather than record a null pod_id: a null entry counts as
+                # "launched" forever, so the arm quietly finishes a seed short.
+                fails = st.setdefault("failures", {})
+                fails[name] = fails.get(name, 0) + 1
+                save_state(st)
+                if fails[name] < 3:
+                    log.warning("  re-queueing %s (attempt %d/3)", name, fails[name])
+                    queue.append(name)
+                else:
+                    log.error("  GIVING UP on %s after 3 failed launches", name)
+                    st["launched"][name] = {"pod_id": None, "ts": time.time(),
+                                            "gave_up": True}
+                    save_state(st)
 
     log.info("all configs launched; %d pods still running", len(account()["pods"]))
 

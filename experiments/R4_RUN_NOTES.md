@@ -213,3 +213,38 @@ yardstick. Against the pooled seed sigma (0.0224) the -0.040 gap is ~1.5 sigma -
 suggestive, not established. Judge cross-model gaps against the POOLED sigma, never
 against one arm's internal spread, which understates it whenever arms differ in
 stability.
+
+## 8. freeze0 is not a "win" — it is a higher mean bought with a failure mode
+
+With arms A/B/C/D complete (12 runs, 3 seeds each), generalization farm AUC:
+
+| Arm | freeze | backbone LR after warm-up | per-seed AUC | mean | **sd** |
+|---|---|---|---|---|---|
+| A baseline | 5 | 1e-5 | 0.8235, 0.8372, 0.8416 | 0.8341 | 0.0094 |
+| C 6-bands | 5 | 1e-5 | 0.8303, 0.8376, 0.8294 | 0.8324 | **0.0045** |
+| B freeze0 | 0 | 1e-4 | 0.8840, 0.8699, **0.8169** | 0.8569 | **0.0354** |
+| D freeze0+6b | 0 | 1e-4 | 0.8812, 0.8796, **0.8224** | 0.8611 | **0.0335** |
+
+Every pre-registered contrast is **not distinguishable** after Holm correction:
+`d>a` +0.0270 (p 0.364), `b>a` +0.0229 (p 0.364), `a vs c` -0.0016 (p 0.927),
+`b vs d` +0.0041 (p 0.825).
+
+**The shape of the failure matters more than the p-value.** B and D have the two
+highest point estimates of any arm, and in 2 of 3 seeds they reach ~0.88 —
+comfortably above archived v9 (0.8741). What sinks them is that the third seed
+collapses (0.8169, 0.8224). That is not symmetric noise; it reads as a **failure
+mode**: freeze0 usually finds a better solution and occasionally lands somewhere
+much worse. Seed sd splits cleanly by recipe, 5x, across 12 runs:
+freeze5 → 0.0045–0.0094, freeze0 → 0.0335–0.0354.
+
+**Consequence for the historical record.** "freeze0: +0.0045 AUC, +5.9σ, the only
+win in 20 runs" was measured from **single runs**, which cannot observe a
+one-in-three failure mode. The honest restatement: freeze0 raises the expected
+score but makes any individual training run substantially less reliable, and the
+expected gain is not distinguishable from zero once that variance is counted.
+
+**Why this makes arm F the decisive test.** F keeps the warm-up but removes the LR
+cut, separating the two things freeze0 changes at once (section 3). If the warm-up
+is what avoids the bad basin, F should show A/C-like stability with B/D-like means
+— which would beat every arm here *and* archived v9, and would be a genuinely new
+recipe that no run in the project's history has tested.

@@ -181,3 +181,35 @@ pod whose `scored_candidates.parquet` the collector has already pulled (120 s gr
 trailing archive step). This keeps the API key on the laptop rather than shipping it to
 every pod, and it also covers the case where the on-pod watchdog fails. Reaping is wrapped
 in try/except so a failure can never take down the fleet.
+
+## 7. Live demonstration that one seed is not a result (arm B, 2026-08-21)
+
+Arm B's contrast against A was computed twice, once when B had a single collected
+seed and again when all three had landed:
+
+| B seeds | b - a | p_holm | verdict |
+|---|---|---|---|
+| 1 (0.8840) | +0.0499 | 0.003 | "b BETTER than a" |
+| 3 (0.8840, 0.8699, **0.8169**) | +0.0229 | 0.287 | **not distinguishable** |
+
+B's third seed landed 0.067 below its first. Pooled sigma_seed on generalization went
+0.0094 -> **0.0224**, and the apparently decisive effect fell inside the noise band.
+Nothing about the data or the code changed; only the number of seeds did.
+
+This is the campaign's founding premise reproduced in real time, and it is worth
+keeping as the canonical example: the historical record's verdicts were built on
+exactly this kind of single-run comparison.
+
+**Second finding, from the same numbers:** arm B's seed sd is **3.8x arm A's**
+(0.0354 vs 0.0094). That is mechanistically coherent -- B trains the backbone at
+1e-4 from epoch 1, where A trains it at 1e-5 after a warm-up (section 3). The
+higher learning rate buys instability. It also raises the value of arm F, which
+keeps the warm-up *and* the full rate: if the warm-up is what stabilises training,
+F should show A-like variance with B-like or better mean.
+
+**Correction issued at the same time:** an earlier note that arm A sits "~4 sigma"
+below archived v9 on generalization used arm A's own within-arm sd (0.0094) as the
+yardstick. Against the pooled seed sigma (0.0224) the -0.040 gap is ~1.5 sigma --
+suggestive, not established. Judge cross-model gaps against the POOLED sigma, never
+against one arm's internal spread, which understates it whenever arms differ in
+stability.

@@ -110,3 +110,44 @@ informative, since it would arrive despite two handicaps.
 
 Report E accordingly: as an architecture-family datapoint under an explicit handicap, never
 as "ResNet beats DenseNet".
+
+## 5. The v6 -> r4 series comparison IS leakage-free (verified, not assumed)
+
+The frozen blind benchmark was retired for round_4 because the split restructure
+contaminated it. That retirement does **not** extend to the test/eval/generalization
+slices, and this was checked rather than presumed.
+
+**Provenance of every round_4 evaluation row, traced back through v9:**
+
+| v10 slice | n | came from (v9) |
+|---|---|---|
+| generalization | 662 | 462 v9-generalization + 200 v9-`predict` (unlabelled then, labelled now) |
+| test | 2164 | 2164 v9-test |
+| eval | 590 | 590 v9-eval |
+
+**Overlap with each archived model's train+val set:**
+
+| | generalization | test | eval |
+|---|---|---|---|
+| v6 / v7 / v8 / v9 | **0 (0.0%)** | **0 (0.0%)** | **0 (0.0%)** |
+
+And the archived models really were trained on those splits — every archived run log
+records `Splits (explicit)`, so `cnn_split_assigned` describes their actual training
+data rather than a column added later:
+
+```
+v6  Splits (explicit): train=9728   val=2081  test=2094  eval=523  generalization=273
+v9  Splits (explicit): train=12062  val=2666  test=2094  eval=523  generalization=426
+r4  Splits (explicit): train=21478  val=5022  test=2094  eval=523  generalization=617
+```
+
+**Conclusion:** v6, v7, v8, v9 and every round_4 arm can be compared directly on all three
+slices. The label-round series table is valid.
+
+**Where round_4's +73% training data came from.** `qual_eval` went 16,663 (v6) -> 11,772 (v9)
+-> **0** (r4): Rachel folded her qualitative-eval hold-out into train/val. Two consequences:
+- `qual_eval` is no longer a hold-out and must never be used to compare round_4 models
+  against archived ones — it would be 100% contaminated. `evaluate_r4.py` never reads it
+  (the slice is empty and is dropped).
+- This is also why `qual_eval_metrics.json` is never written for round_4, which silently
+  broke the collector's completion marker (section 4 of the collector fix).

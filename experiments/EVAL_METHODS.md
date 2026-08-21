@@ -174,3 +174,35 @@ Mitigating factors, stated so a reader can discount appropriately:
 runs" stands as a claim about recipes but its stated mechanism was wrong: freeze0 removes the
 warm-up *and* raises the backbone LR 10x. Arms A/B/F now decompose that; until F reports, no
 mechanistic claim about freezing should be made.
+
+## Pre-registered selection rule for the website default (written 2026-08-21, before arms D/E/F reported)
+
+The user asked for all 18 runs to be published with "the best model" as the site
+default. Written now, while only arms A (3 seeds) and B (2 seeds) have landed and no
+D/E/F result exists, so the rule cannot be shaped to fit the winner.
+
+**Primary criterion: farm ROC-AUC on `generalization`.** The published map's job is to
+find facilities in countries with no training labels — that is precisely what the
+generalization slice measures. `test` and `eval` are in-domain and round_4 inflated
+in-domain data by 73%, so ranking on them would reward memorising the focal countries.
+
+**Decision procedure**
+
+1. Rank arms by seed-averaged generalization AUC (`dAUC_rec`, the recipe-level estimand).
+2. Treat two arms as tied when their difference is below **both** the practical floor
+   (0.005 AUC) and the two-arm decision band (`2.80 * SE_total`). Ties break on, in order:
+   (a) `eval` AUC, (b) lower ECE on generalization, (c) fewer parameters.
+3. **Publish the best single run of the winning arm, not the arm mean.** A dataset must
+   correspond to a real checkpoint someone can redeploy; the arm mean is not a model.
+   Within the winning arm, pick the seed with the highest generalization AUC and record
+   in the release notes that the arm mean is the honest expectation — a single seed is
+   selected on the same slice it is scored on, so its number is optimistically biased.
+4. **Archived v9 stays the default if it beats every round_4 arm** on the primary
+   criterion by more than the practical floor. Preliminary data makes this a live
+   possibility, not a formality: arm A currently sits ~0.040 *below* v9 (~4σ). Newest
+   is not automatically best, and the site should not default to a regression.
+
+**What would void this rule:** if the winning arm's advantage rests on a single country
+(check the per-country table), or if the winner is materially worse calibrated
+(ECE gap > 0.05) while the site presents scores as probabilities. Either case gets
+escalated to the user with the table rather than resolved silently.

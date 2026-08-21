@@ -249,8 +249,15 @@ def _build_deadman_snippet(cfg: PipelineConfig, code_dir: str, config_name: str,
 def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str] | None = None) -> str:
     """Startup script for a GPU pod: pull code, install deps, then run pipeline."""
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
-    venv = "/workspace/farm-venv"
-    py = f"{venv}/bin/python"
+    # Use the CONTAINER's python, not a venv on the network volume. The
+    # runpod/pytorch image already ships torch + torchvision + CUDA (verified:
+    # torch 2.4.1+cu124, torchvision 0.19.1+cu124, cuda True), so building a
+    # separate venv re-downloaded ~14 GB onto slow shared storage and took ~2
+    # hours per fleet. Installing only the MISSING requirements into the
+    # container takes 59 seconds, on fast container-local disk, and cannot be
+    # corrupted by another pod because nothing is shared.
+    venv = "/workspace/farm-venv"   # legacy path, retained for the lock file only
+    py = "python3"
 
     repo = getattr(cfg.runpod, "github_repo", "")
     branch = getattr(cfg.runpod, "github_branch", "main")
@@ -270,11 +277,11 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
     # can then be staged directly onto the volume, taking GitHub off the critical
     # path entirely.
     git_sync = (
-        f"(cd {code_dir} && timeout 300 git fetch origin"
+        f"(cd {code_dir} && timeout 120 git fetch origin"
         f" && timeout 120 git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo {branch}))"
         f" || (echo 're-cloning {code_dir} from {repo} via /tmp'"
         f" && rm -rf /tmp/__repo_tmp"
-        f" && timeout 600 git clone --branch {branch} --single-branch --no-checkout {repo} /tmp/__repo_tmp"
+        f" && timeout 180 git clone --branch {branch} --single-branch --no-checkout {repo} /tmp/__repo_tmp"
         f" && rm -rf {code_dir}/.git"
         f" && mv /tmp/__repo_tmp/.git {code_dir}/.git"
         f" && rm -rf /tmp/__repo_tmp"
@@ -292,43 +299,29 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
         # Cache torchgeo/torch pretrained weights on the network volume so
         # repeat pods don't re-download (e.g. SoftCon's ~98 MB checkpoint).
         "export TORCH_HOME=/workspace/.torch",
+        # The repo is PRIVATE. Over unauthenticated HTTPS git blocks on a
+        # credential prompt reading stdin that never arrives -- which is what
+        # made fetches hang for 84 minutes and clones stall at 1 MB with zero
+        # network activity (misdiagnosed at the time as datacentre throttling).
+        # These make git FAIL FAST instead, so the staged-code fallback runs in
+        # seconds. Set GIT_TOKEN as a RunPod secret to make git sync work.
+        "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true GCM_INTERACTIVE=never",
         f"git config --global --add safe.directory {code_dir}",
         f"cd {code_dir}",
         git_sync,
         f"cd {code_dir}",
         _run_dir_cmd(cfg, config_name, "pipeline"),
-        # Venv bootstrap on a SHARED network volume. Three failure modes are
-        # deliberately handled here, all of them observed in production:
-        #
-        # 1. A venv directory that EXISTS but whose torch is import-broken (built
-        #    on a CPU-only pod). A `-d` test accepts it and the run dies later.
-        # 2. Concurrent rebuilds: a fleet launched together fails the check at the
-        #    same instant and all `rm -rf` the same directory. flock serialises it.
-        # 3. THE DESTRUCTIVE ONE: a health check that tests for a package the
-        #    requirements do not install (torchvision was missing from
-        #    requirements-train.txt) makes EVERY pod think the venv is broken. Each
-        #    then deletes a venv that other pods are actively running from -- which
-        #    killed a training run 138 minutes in. So the destructive rebuild is now
-        #    reserved for a genuinely broken *torch*; a merely incomplete venv is
-        #    repaired in place with pip install, which cannot break a running pod.
-        f"({py} -c 'import torch; assert torch.cuda.is_available()' 2>/dev/null"
-        f" && echo 'farm-venv torch OK')"
-        f" || (echo 'farm-venv torch missing/broken -> waiting for rebuild lock'"
-        f" && flock -w 3600 {venv}.lock -c \""
-        f"{py} -c 'import torch; assert torch.cuda.is_available()' 2>/dev/null"
-        f" && echo 'another pod rebuilt farm-venv; skipping'"
-        f" || (echo 'rebuilding farm-venv (lock held)'"
-        f" && rm -rf {venv}"
-        f" && python -m venv {venv}"
-        f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)\")",
-        # Non-destructive top-up: bring an existing venv up to the current
-        # requirements without ever deleting it. Serialised so two pods do not
-        # pip-install into the same site-packages at once.
-        f"flock -w 1800 {venv}.lock -c \""
-        f"{py} -c 'import torch, torchvision, torchgeo' 2>/dev/null"
-        f" && echo 'farm-venv complete'"
-        f" || (echo 'topping up farm-venv in place (no delete)'"
-        f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)\"",
+        # Dependency bootstrap, ~1 minute, container-local.
+        # `blinker` ships as a distutils package in this image and pip refuses to
+        # uninstall it ("Cannot uninstall blinker 1.4"), which fails the whole
+        # requirements install; replacing it first with --ignore-installed clears
+        # that. torch/torchvision are already satisfied by the image, so pip skips
+        # the heavy wheels entirely.
+        "python3 -c 'import torchgeo, mlflow, geopandas, ee' 2>/dev/null"
+        " && echo 'deps already present'"
+        " || (echo 'installing requirements into container python'"
+        " && python3 -m pip install --no-cache-dir --ignore-installed blinker"
+        " && python3 -m pip install --no-cache-dir -r requirements-train.txt)",
         # An existing farm-venv is NOT reinstalled above, so a stale one may
         # predate the SoftCon weights (torchgeo>=0.7.0). If this config uses the
         # SoftCon backbone, verify the enum is importable and upgrade in place

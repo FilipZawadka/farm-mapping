@@ -40,6 +40,11 @@ ORDER = [
     "world_v10_fourclass_r4_e_s42",
     "world_v10_fourclass_r4_e_s43",
     "world_v10_fourclass_r4_e_s44",
+    # Arm F added mid-campaign: separates the frozen warm-up from the 10x backbone
+    # LR cut that arm A's unfreeze transition silently couples to it.
+    "world_v10_fourclass_r4_f_s42",
+    "world_v10_fourclass_r4_f_s43",
+    "world_v10_fourclass_r4_f_s44",
 ]
 
 log = logging.getLogger("fleet")

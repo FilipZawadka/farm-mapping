@@ -139,3 +139,38 @@ does not move any verdict.
 headline analysis would have been missing with no error raised. Keys are now resolved in
 either order with an explicit sign flip, verdicts name their direction
 ("b BETTER than a"), and an explicit warning fires if the family ever resolves empty.
+
+## Amendments to the pre-registration (2026-08-21, mid-campaign)
+
+**What changed.** Arm **F** (`freeze=5` + `unfreeze_lr_scale=1.0`) was added, and the
+confirmatory family grew from 3 comparisons to 5:
+
+| Contrast | Isolates |
+|---|---|
+| `b > a` | freeze0 recipe vs baseline recipe (original) |
+| `d > a` | freeze0 + 6 bands vs baseline (original) |
+| `e > d` | DenseNet-121 vs SoftCon (original) |
+| **`f > a`** | **pure LR effect** — warm-up held fixed in both arms |
+| **`b > f`** | **pure warm-up effect** — backbone LR held at 1e-4 in both arms |
+
+Holm-Bonferroni now corrects across m=5 rather than m=3, which is *more* conservative for
+the three original contrasts. No original contrast was removed or redefined.
+
+**Why, and what I had seen.** Full disclosure, because this is an amendment made after data
+started arriving. The trigger was a **code-inspection** finding, not an outcome: `train.py`
+hard-coded `lr_scale=0.1` at the unfreeze transition, so `freeze_backbone_epochs > 0` silently
+coupled a frozen warm-up to a permanent 10x backbone LR cut (R4_RUN_NOTES section 3). What
+prompted the inspection *was* partial data — arm A at val F1 0.640 vs arm B at 0.824, mid-training
+on the val split. So this amendment is **not blind**.
+
+Mitigating factors, stated so a reader can discount appropriately:
+- No arm-F result existed, or could exist, at the time of the amendment — the config it needs was
+  unrepresentable until `unfreeze_lr_scale` was added.
+- The evidence was the *validation* curve used for checkpointing, not any test/eval/generalization
+  slice; all reported contrasts are computed on the held-out slices.
+- The amendment adds a mechanism decomposition; it does not alter the original three hypotheses.
+
+**Effect on the historical record.** The prior headline "freeze0 is the only validated win in 20
+runs" stands as a claim about recipes but its stated mechanism was wrong: freeze0 removes the
+warm-up *and* raises the backbone LR 10x. Arms A/B/F now decompose that; until F reports, no
+mechanistic claim about freezing should be made.

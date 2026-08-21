@@ -355,8 +355,10 @@ def _run_epoch_loop(
             and start_epoch <= ctx.cfg.model.freeze_backbone_epochs + 1
         ):
             ctx.model.unfreeze_backbone()
-            optimizer = _make_optimizer(ctx.model, ctx.cfg, lr_scale=0.1)
+            optimizer = _make_optimizer(ctx.model, ctx.cfg, lr_scale=ctx.cfg.model.unfreeze_lr_scale)
             scheduler = _build_scheduler(optimizer, ctx.cfg)
+            log.info("Unfroze backbone at epoch %d; LR scaled by %.3g -> %.3g",
+                     epoch, ctx.cfg.model.unfreeze_lr_scale, optimizer.param_groups[0]["lr"])
 
         t_loss = _train_one_epoch(ctx.model, train_loader, ctx.criterion, optimizer, ctx.device, ctx.use_amp, ctx.scaler)
         v_loss, vm = _evaluate(ctx.model, val_loader, ctx.criterion, ctx.device)

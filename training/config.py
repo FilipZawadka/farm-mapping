@@ -379,6 +379,13 @@ class ModelConfig(BaseModel):
     num_classes: int = 2
     input_channels: int = 9
     freeze_backbone_epochs: int = 3
+    # LR multiplier applied when the backbone unfreezes. Historically hard-coded to
+    # 0.1 in train.py, which silently made `freeze_backbone_epochs > 0` a COMPOUND
+    # lever: it coupled the frozen warm-up to a permanent 10x backbone LR cut, so
+    # every freeze-vs-freeze0 comparison in the record confounded the two. Default
+    # stays 0.1 so existing configs are byte-equivalent; set 1.0 to warm up WITHOUT
+    # the LR penalty. See experiments/R4_RUN_NOTES.md section 3.
+    unfreeze_lr_scale: float = 0.1
     # Optional: display names for each class index, used by visualize.py to override
     # the hardcoded 7-class names. Must have length == num_classes when set.
     class_names: Optional[list[str]] = None

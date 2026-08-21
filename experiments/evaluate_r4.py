@@ -31,14 +31,17 @@ import lib  # noqa: E402
 V10 = lib.REPO / "data/rachel_geometry_candidates/all_countries/all_clusters_v10.parquet"
 GPU = Path(__file__).resolve().parent / "gpu_results"
 ARMS = {"a": "baseline (v9/v6 recipe)", "b": "freeze0 only", "c": "6 bands only",
-        "d": "freeze0 + 6 bands", "e": "DenseNet-121 (+freeze0+6bands)"}
+        "d": "freeze0 + 6 bands", "e": "DenseNet-121 (+freeze0+6bands)", "f": "freeze5 + full-LR unfreeze"}
 SEEDS = (42, 43, 44)
 CLASSES = ["NotFarm", "Poultry", "Pigs", "Cattle"]
 BOOT = 10_000   # EVAL_METHODS: raised from 2,000 so p-values are not floored at 2/2000
 
 # Pre-registered confirmatory family (EVAL_METHODS section 4). Everything else
 # printed by this script is exploratory and labelled as such.
-CONFIRMATORY = [("b", "a"), ("d", "a"), ("e", "d")]
+CONFIRMATORY = [("b", "a"), ("d", "a"), ("e", "d"),
+                # Amendment 2026-08-21 (see EVAL_METHODS "amendments"):
+                ("f", "a"),   # pure LR effect  (warm-up held fixed)
+                ("b", "f")]   # pure warm-up effect (backbone LR held high)
 
 
 # ---------------------------------------------------------------- slices

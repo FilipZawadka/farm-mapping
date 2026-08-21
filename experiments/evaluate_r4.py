@@ -273,13 +273,23 @@ def main() -> None:
         print(f"\npooled sigma_seed on this slice: {sigma_seed:.4f}"
               f"   (single-run decision band 2*sqrt2*sigma = +/-{2*np.sqrt(2)*sigma_seed:.4f})")
 
-        # archived reference models
+        # Archived reference models, scored on the SAME rows as the arms.
+        # Previously these used slice-intersect-archived (n=662) while the arms used
+        # rows common to all their seeds (n=617), so the series table compared
+        # different denominators. Align to the arms' row set whenever arms exist.
+        arm_common = None
+        for v in arms.values():
+            arm_common = set(v["ids"]) if arm_common is None else (arm_common & set(v["ids"]))
         for arch in ("v6","v7","v8","v9"):
             if arch in scores:
-                common = sorted(set(sl.index) & set(scores[arch].index))
+                base = set(sl.index) if arm_common is None else arm_common
+                common = sorted(base & set(scores[arch].index))
                 if len(common) > 50:
                     y = sl.loc[common,"y"].to_numpy().astype(int)
-                    print(f"  archived {arch}: AUC {lib.safe_auc(y, scores[arch].loc[common].to_numpy()):.4f} (n={len(common)})")
+                    tag = "" if arm_common is None else " [arm rows]"
+                    print(f"  archived {arch}: AUC "
+                          f"{lib.safe_auc(y, scores[arch].loc[common].to_numpy()):.4f} "
+                          f"(n={len(common)}){tag}")
 
         # contrasts
         print("\ndelta = second arm minus first (positive => second arm better)")

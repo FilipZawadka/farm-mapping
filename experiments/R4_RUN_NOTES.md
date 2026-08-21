@@ -80,3 +80,33 @@ instead say "the freeze schedule's coupled 0.1x LR drop hurts".
 **full** LR (`lr_scale=1.0`) — warm-up benefits without the LR penalty. Nothing in the
 20-run record tests this, because `lr_scale=0.1` is hard-coded rather than configurable.
 Proposed as arm **F** (3 seeds, ~$7, ~3 h).
+
+## 4. Arm E (DenseNet) is a three-way confound — verified buildable, interpret narrowly
+
+Pre-flight smoke test on a live pod (CPU-only, container python: torch 2.4.1+cu124,
+torchvision 0.19.1+cu124) — run BEFORE arm E reached the queue head so a broken builder
+would not burn 3 x ~3 h of GPU time:
+
+```
+arch: densenet121 | hub: densenet121 | in_ch: 6
+RESULT densenet121 in=6 -> (2, 4) params=7.0M  OK
+d_s42  resnet50_softcon in=6 -> (2, 4) params=23.5M  OK
+```
+
+Both build and forward correctly. But E vs D differs in **three** ways at once, not one:
+
+| Factor | D | E |
+|---|---|---|
+| Architecture | ResNet-50 | DenseNet-121 |
+| Pre-training | SoftCon (Sentinel-2 native) | ImageNet (RGB) |
+| Capacity | 23.5M params | **7.0M params (3.4x smaller)** |
+
+The pretraining handicap was known and accepted when the run was requested (no S2-native
+DenseNet weights exist). The 3.4x capacity gap was not, and it pushes the same direction.
+So a loss for E is close to uninterpretable as an architecture verdict — it cannot separate
+"DenseNet is worse" from "ImageNet init is worse" (the record's most robust result, ~+0.10
+for S2-native) from "7M params is not enough". A *win* for E, by contrast, would be strongly
+informative, since it would arrive despite two handicaps.
+
+Report E accordingly: as an architecture-family datapoint under an explicit handicap, never
+as "ResNet beats DenseNet".

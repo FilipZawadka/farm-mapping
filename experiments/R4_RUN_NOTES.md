@@ -151,3 +151,33 @@ slices. The label-round series table is valid.
   (the slice is empty and is dropped).
 - This is also why `qual_eval_metrics.json` is never written for round_4, which silently
   broke the collector's completion marker (section 4 of the collector fix).
+
+## 6. Pods cannot self-terminate — auto_terminate has never worked
+
+Found when `r4_b_s42` sat idle and billing ~10 min after its pipeline logged
+`Pipeline completed successfully`, still holding one of the four slots.
+
+`training/auto_terminate.py` needs `RUNPOD_API_KEY` and `RUNPOD_POD_ID`:
+
+```python
+if runpod.api_key and pod_id:  runpod.terminate_pod(pod_id)
+else:                          print("... not set, skipping auto-terminate")
+```
+
+The startup script *does* append it (`; python3 -m training.auto_terminate`), and the
+`runpod` package *is* present (1.12.0). But `_RUNPOD_SECRETS_ENV` — the only env injected
+into pods — carries just `GEE_SERVICE_ACCOUNT`, `GEE_PRIVATE_KEY_JSON` and
+`GOOGLE_MAPS_API_KEY`. **`RUNPOD_API_KEY` is never passed**, so the branch always falls
+through to "skipping". This is long-standing, not a round_4 regression, and it plausibly
+explains the previously "stranded billing pod" incident.
+
+Cost of the bug: a finished pod idles until the 30-minute no-progress watchdog fires
+`runpodctl remove` — about **$0.37 and 30 minutes of slot latency per run**, i.e. ~$7 and
+several hours of wall clock across 18 runs. Worse, if the watchdog path also fails, the
+fleet stalls permanently at 4 pods and the remaining runs never launch.
+
+**Fix: reap from the launcher, not the pod.** `launch_fleet.reap_finished()` terminates any
+pod whose `scored_candidates.parquet` the collector has already pulled (120 s grace for the
+trailing archive step). This keeps the API key on the laptop rather than shipping it to
+every pod, and it also covers the case where the on-pod watchdog fails. Reaping is wrapped
+in try/except so a failure can never take down the fleet.

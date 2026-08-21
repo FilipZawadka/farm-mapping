@@ -128,6 +128,43 @@ def launch_one(name: str) -> str | None:
     return None
 
 
+def _terminate(pod_id: str) -> None:
+    from training.env_loader import load_dotenv
+    load_dotenv()
+    import os, runpod
+    runpod.api_key = os.environ["RUNPOD_API_KEY"]
+    runpod.terminate_pod(pod_id)
+
+
+def reap_finished(me: dict) -> int:
+    """Terminate pods whose run is already collected.
+
+    Pods cannot self-terminate: training/auto_terminate.py needs RUNPOD_API_KEY,
+    and _RUNPOD_SECRETS_ENV injects only the GEE/Maps secrets, so it always takes
+    its "skipping auto-terminate" branch. Without this reaper a finished pod idles
+    until the 30-minute no-progress watchdog fires -- roughly $0.37 and 30 minutes
+    of slot latency per run, which across 18 runs is ~$7 and hours of wall clock.
+    Reaping here keeps the API key on the laptop instead of shipping it to pods.
+
+    A run counts as finished once the collector has pulled scored_candidates.parquet
+    (the pipeline's last substantive artifact); the 120 s grace lets the trailing
+    archive step finish.
+    """
+    dest = REPO / "experiments" / "gpu_results"
+    killed = 0
+    for pod in me["pods"]:
+        name = pod["name"].split("/")[-1]
+        f = dest / name / "scored_candidates.parquet"
+        try:
+            if f.exists() and (time.time() - f.stat().st_mtime) > 120:
+                log.info("reaping finished pod %s (%s)", pod["id"], name)
+                _terminate(pod["id"])
+                killed += 1
+        except Exception as exc:                     # never let reaping kill the fleet
+            log.warning("  reap failed for %s: %s", name, str(exc)[:200])
+    return killed
+
+
 def cmd_status() -> None:
     me = account()
     pods = me["pods"]
@@ -152,6 +189,8 @@ def cmd_run(max_concurrent: int, budget: float, poll: int) -> None:
 
     while queue:
         me = account()
+        if reap_finished(me):
+            me = account()                            # slots just freed; re-read
         balance, running = me["clientBalance"], len(me["pods"])
         hourly = me["currentSpendPerHr"]
 

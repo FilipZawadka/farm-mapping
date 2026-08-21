@@ -732,12 +732,28 @@ model.**
 | E1.1 | RGB + NDWI | −0.0115 | −15.2 | worse |
 | E1.1 | RGB only | −0.0170 | −22.3 | worse |
 
-**The staged freeze hurts.** Freezing the backbone for five epochs before fine-tuning — a
-convention adopted without testing — costs accuracy. Removing it improves the frozen
-benchmark by +0.0045 (5.9σ, CI [+0.0025, +0.0065]), test macro-F1 by +0.017 and qual_eval
-by +0.020, while shortening training. This is the only change of the twenty that improved
-the model. The learning rate is already at a sensible optimum: 3×10⁻⁵ is clearly worse and
-3×10⁻⁴ trades test against qual_eval.
+**The staged freeze hurts — but not for the reason it appears to.** Disabling the
+five-epoch freeze phase improves the frozen benchmark by +0.0045 (5.9σ, CI [+0.0025,
++0.0065]), test macro-F1 by +0.017 and qual_eval by +0.020, while shortening training.
+This is the only change of the twenty that improved the model.
+
+The *mechanism*, however, is not the one the lever's name implies. The unfreeze transition
+does two things at once: it unfreezes the backbone **and** rebuilds the optimiser at 0.1×
+the learning rate with a fresh cosine schedule. Setting `freeze_backbone_epochs: 0` skips
+that branch entirely, so the "no freeze" arm also trains its backbone at 10× the learning
+rate of the baseline (1e-4 against 1e-5) for every remaining epoch. This is confirmed in
+the logged learning rate, which drops from 9.755e-05 at epoch 5 to 9.990e-06 at epoch 6 in
+every freeze-enabled run. The ablation is a two-factor change reported as one, and the
+second factor is very likely dominant.
+
+This also qualifies the learning-rate result below. The sweep varied the *base* rate while
+leaving the 0.1× coupling intact, so the configuration a staged warm-up would most
+plausibly want — warm-up followed by fine-tuning at the full rate — was never expressible,
+let alone tested. The round-four campaign adds an arm that decomposes it: warm-up retained,
+unfreeze at full learning rate. Until it reports, the correct statement is that *the freeze
+schedule's coupled learning-rate cut hurts*, not that freezing hurts. The base learning
+rate is otherwise at a sensible optimum: 3×10⁻⁵ is clearly worse and 3×10⁻⁴ trades test
+against qual_eval.
 
 **The spectral indices contribute nothing; the SWIR bands do.** Six raw bands without
 NDVI, NDBI, or NDWI are indistinguishable from the full nine-channel input on every slice

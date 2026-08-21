@@ -25,6 +25,7 @@ STATE = Path(__file__).resolve().parent / "results" / "fleet_state.json"
 # Ordered by value: seed variance first (it calibrates every other delta),
 # then the levers most likely to change the production recipe.
 ORDER = [
+    "world_v10_fourclass_r4_a_s42",
     "world_v10_fourclass_r4_a_s43",
     "world_v10_fourclass_r4_a_s44",
     "world_v10_fourclass_r4_b_s42",

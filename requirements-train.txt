@@ -3,7 +3,11 @@ torch>=2.1.0
 # check in runpod_launch; torchgeo does not reliably pull it in.
 torchvision>=0.16.0
 transformers>=4.36.0
-mlflow>=2.10.0
+# MUST stay <3: mlflow 3.x removed the local filesystem tracking backend
+# ('./mlruns' -> MlflowException: filesystem tracking backend is in maintenance
+# mode), which is what configs set as mlflow.tracking_uri. An unpinned install
+# pulled 3.x and crashed training on every pod before epoch 1.
+mlflow>=2.10.0,<3
 earthengine-api>=0.1.390
 geopandas>=0.14.0
 pandas>=2.1.0

@@ -459,9 +459,39 @@ def _wait_for_ssh(pod_id: str, runpod, timeout: int = 600) -> tuple[str, int]:
     raise TimeoutError(f"SSH not available on pod {pod_id} after {timeout}s")
 
 
+def _stage_code(host: str, port: int, code_dir: str = "/workspace/farm-mapping") -> None:
+    """Copy the current working-tree code onto the pod's network volume.
+
+    Only source/config trees -- never data/, patches or outputs, which live on the
+    volume and must not be overwritten.
+    """
+    import subprocess
+    from pathlib import Path as _P
+    repo = _P(__file__).resolve().parents[1]
+    trees = [t for t in ("configs", "training", "experiments", "scripts", "src",
+                         "requirements-train.txt", "requirements-cpu.txt")
+             if (repo / t).exists()]
+    tar = subprocess.Popen(["tar", "czf", "-", *trees], cwd=repo, stdout=subprocess.PIPE)
+    ssh = subprocess.Popen(
+        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=20",
+         "-p", str(port), f"root@{host}",
+         f"mkdir -p {code_dir} && cd {code_dir} && tar xzf - --no-same-owner"],
+        stdin=tar.stdout)
+    tar.stdout.close()
+    rc = ssh.wait(timeout=600)
+    log.info("staged %d code trees to %s (rc=%s)", len(trees), code_dir, rc)
+
+
 def _ssh_run_startup(host: str, port: int, script: str, nv_log: str | None = None) -> None:
     """SSH into the pod and run the startup script inside a detached tmux session."""
     import subprocess, base64
+    # Push the CURRENT working-tree code to the network volume before running
+    # anything. The repo is private, so pods cannot git-pull; they run whatever
+    # was last staged by hand. That bit us when a requirements pin was committed
+    # locally but never staged, and every pod kept installing the broken version.
+    # Staging here makes "what the pod runs" always equal "what is on disk now".
+    _stage_code(host, port)
+
     remote_script = "/tmp/prep_startup.sh"
     # Encode as base64 to avoid all quoting/escaping issues over SSH
     script_b64 = base64.b64encode(script.encode()).decode()

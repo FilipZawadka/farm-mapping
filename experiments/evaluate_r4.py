@@ -143,6 +143,97 @@ def compare(a1: dict, a2: dict, sigma_seed: float) -> dict:
             "mde80": 2.80 * se_total}
 
 
+# ------------------------------------------------- secondary reporting
+def _country_map() -> "pd.Series":
+    """cid -> country. v10 carries ADM0 (ISO3), not a `country` column."""
+    import pyarrow.parquet as pq
+    cols = set(pq.ParquetFile(V10).schema.names)
+    key = "ADM0" if "ADM0" in cols else ("country" if "country" in cols else None)
+    if key is None:
+        return pd.Series(dtype=object)
+    v10 = pd.read_parquet(V10, columns=["cluster_id", key])
+    v10["cid"] = v10.cluster_id.astype(str)
+    return v10.drop_duplicates("cid").set_index("cid")[key]
+
+
+def calibration_table(arms: dict, sl: pd.DataFrame) -> None:
+    """ECE of the farm probability per arm (Guo et al. 2017).
+
+    Reported separately from AUC because they answer different questions: AUC is
+    ranking quality (threshold-free), ECE is whether the probability can be read as
+    a probability. A recipe can win on AUC and still be the worse deployment choice
+    if its scores are miscalibrated at the operating threshold.
+    """
+    print(f"\n{'arm':<4} {'ECE (mean over seeds)':<24} {'per-seed ECE'}")
+    for a, v in arms.items():
+        y = v["y"]
+        eces = [lib.ece(y, v["P"][sd]) for sd in v["P"]]
+        per = " ".join(f"{x:.4f}" for x in eces)
+        print(f"{a:<4} {np.mean(eces):<24.4f} {per}")
+
+
+def per_country_table(arms: dict, sl: pd.DataFrame, cmap, min_n: int = 20) -> dict:
+    """Seed-averaged farm AUC by country -- catches an arm that wins overall while
+    regressing somewhere specific, which a pooled metric hides."""
+    out = {}
+    countries = cmap.reindex([c for c in next(iter(arms.values()))["ids"]]).fillna("?")
+    names = sorted({c for c in countries.unique()
+                    if (countries == c).sum() >= min_n and c != "?"})
+    if not names:
+        return out
+    print(f"\n{'country':<10} {'n':>5} " + " ".join(f"{a:>8}" for a in arms))
+    for cn in names:
+        mask = (countries == cn).to_numpy()
+        row = {}
+        cells = []
+        for a, v in arms.items():
+            y = v["y"][mask]
+            if len(np.unique(y)) < 2:
+                cells.append(f"{'--':>8}"); continue
+            p = np.mean([v["P"][sd][mask] for sd in v["P"]], axis=0)
+            auc = lib.safe_auc(y, p)
+            row[a] = auc
+            cells.append(f"{auc:>8.4f}")
+        if row:
+            out[cn] = row
+            print(f"{cn:<10} {int(mask.sum()):>5} " + " ".join(cells))
+    return out
+
+
+def class_table(runs_present: list) -> dict:
+    """4-class macro-F1 and Cattle-excluded mean F1 from the collected metrics files.
+
+    Cattle is ~6-7 rows in these slices and was shown to drive ~80% of seed variance,
+    so the Cattle-excluded figure is the stable read; both are reported.
+    """
+    import json
+    out = {}
+    for slice_name, fname in (("eval", "eval_metrics.json"),
+                              ("generalization", "generalization_metrics.json")):
+        rows = {}
+        for run in runs_present:
+            f = GPU / run / fname
+            if not f.exists():
+                continue
+            d = json.loads(f.read_text())
+            per_class = [d.get(f"f1_class{i}") for i in range(4)]
+            have = [x for x in per_class if isinstance(x, (int, float))]
+            no_cattle = [x for i, x in enumerate(per_class[:3])
+                         if isinstance(x, (int, float))]
+            rows[run] = {"macro_f1": float(np.mean(have)) if have else float("nan"),
+                         "f1_excl_cattle": float(np.mean(no_cattle)) if no_cattle else float("nan"),
+                         "per_class": per_class}
+        if not rows:
+            continue
+        out[slice_name] = rows
+        lib.header(f"per-class F1 -- slice {slice_name}")
+        print(f"{'run':<34} {'macro-F1':>9} {'excl-Cattle':>12}   per-class [NotFarm,Poultry,Pigs,Cattle]")
+        for run, r in sorted(rows.items()):
+            pc = ", ".join("--" if x is None else f"{x:.3f}" for x in r["per_class"])
+            print(f"{run:<34} {r['macro_f1']:>9.4f} {r['f1_excl_cattle']:>12.4f}   [{pc}]")
+    return out
+
+
 def main() -> None:
     lib.header("Round_4 evaluation (see experiments/EVAL_METHODS.md)")
     SL = slices()
@@ -160,6 +251,7 @@ def main() -> None:
         print("\nNo round_4 runs collected yet -- rerun when training finishes.")
         return
 
+    CMAP = _country_map()
     report = {}
     for sname, sl in SL.items():
         lib.header(f"slice: {sname}  (n={len(sl)}, farm rate {sl.y.mean():.2f})")
@@ -227,9 +319,18 @@ def main() -> None:
                 print(f"  {k:<10} d={d:+.4f}  p_holm={p:.3f}  {verdict}")
                 rows[src]["p_holm"] = p
                 rows[src]["verdict"] = verdict
+        lib.header(f"calibration (ECE) -- slice {sname}")
+        calibration_table(arms, sl)
+
+        lib.header(f"per-country farm AUC (n>=20) -- slice {sname}")
+        pc = per_country_table(arms, sl, CMAP)
+
         report[sname] = {"sigma_seed": sigma_seed,
                          "per_arm": {a: v["per_seed"] for a, v in arms.items()},
-                         "contrasts": rows}
+                         "contrasts": rows,
+                         "per_country": pc}
+
+    report["per_class"] = class_table([n for n in scores if n.startswith("world_")])
 
     lib.save("r4_evaluation", report)
     print("\nsaved -> experiments/results/r4_evaluation.json")

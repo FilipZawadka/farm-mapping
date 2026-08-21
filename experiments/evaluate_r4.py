@@ -113,14 +113,29 @@ def compare(a1: dict, a2: dict, sigma_seed: float) -> dict:
     # arm score = mean P(farm) across that arm's seeds (a seed-averaged model)
     p1 = np.mean([a1["P"][s][take1] for s in a1["P"]], axis=0)
     p2 = np.mean([a2["P"][s][take2] for s in a2["P"]], axis=0)
-    delta, ci, pv = lib.paired_bootstrap_delta(lib.safe_auc, y, p1, p2, n=BOOT)
+    delta_ens, ci, pv = lib.paired_bootstrap_delta(lib.safe_auc, y, p1, p2, n=BOOT)
     se_boot = (ci[1] - ci[0]) / (2 * 1.96)
     n1, n2 = len(a1["per_seed"]), len(a2["per_seed"])
+
+    # Two DIFFERENT estimands; do not conflate them (see EVAL_METHODS "estimands"):
+    #  delta_ens = AUC(seed-averaged probability) -- compares two trained ARTIFACTS
+    #              (a 3-seed ensemble each). It saturates near the ceiling, so it
+    #              systematically COMPRESSES recipe differences.
+    #  delta_rec = difference in mean per-seed AUC -- compares two RECIPES, which is
+    #              the question every arm here was designed to answer. PRIMARY.
+    m1 = float(np.mean(list(a1["per_seed"].values())))
+    m2 = float(np.mean(list(a2["per_seed"].values())))
+    delta_rec = m2 - m1
+
+    # se_boot (row-sampling noise) is taken from the ensemble bootstrap as a proxy for
+    # the mean-per-seed statistic. Immaterial in practice: the seed term dominates it
+    # by ~5x, and both arms share rows so row noise largely cancels.
     se_total = float(np.sqrt(se_boot ** 2 + sigma_seed ** 2 * (1 / n1 + 1 / n2)))
-    z = delta / se_total if se_total else np.nan
+    z = delta_rec / se_total if se_total else np.nan
     from math import erfc
     p_total = float(erfc(abs(z) / np.sqrt(2))) if se_total else np.nan
-    return {"n": len(common), "delta": delta, "ci_boot": list(ci), "p_boot": pv,
+    return {"n": len(common), "delta": delta_rec, "delta_ens": delta_ens,
+            "ci_boot": list(ci), "p_boot": pv,
             "se_boot": se_boot, "se_total": se_total, "z": z, "p_total": p_total,
             "mde80": 2.80 * se_total}
 
@@ -172,7 +187,8 @@ def main() -> None:
                     print(f"  archived {arch}: AUC {lib.safe_auc(y, scores[arch].loc[common].to_numpy()):.4f} (n={len(common)})")
 
         # contrasts
-        print(f"\n{'contrast':<12} {'n':>6} {'dAUC':>9} {'SE_boot':>9} {'SE_tot':>9} "
+        print("\ndelta = second arm minus first (positive => second arm better)")
+        print(f"\n{'contrast':<12} {'n':>6} {'dAUC_rec':>9} {'dAUC_ens':>9} {'SE_tot':>9} "
               f"{'z':>7} {'p_raw':>8} {'MDE80':>8}")
         raw_p, rows = {}, {}
         for a1, a2 in itertools.combinations(arms, 2):
@@ -180,22 +196,34 @@ def main() -> None:
             key = f"{a1}_vs_{a2}"
             rows[key] = r
             raw_p[key] = r["p_total"]
-            print(f"{key:<12} {r['n']:>6} {r['delta']:>+9.4f} {r['se_boot']:>9.4f} "
+            print(f"{key:<12} {r['n']:>6} {r['delta']:>+9.4f} {r['delta_ens']:>+9.4f} "
                   f"{r['se_total']:>9.4f} {r['z']:>+7.2f} {r['p_total']:>8.3f} {r['mde80']:>8.4f}")
 
-        conf = {f"{x}_vs_{y_}": raw_p[f"{x}_vs_{y_}"] for x, y_ in CONFIRMATORY
-                if f"{x}_vs_{y_}" in raw_p}
+        # rows are keyed by itertools.combinations order ("a_vs_b"), where delta is
+        # oriented second-minus-first. CONFIRMATORY is written as (better?, baseline),
+        # so resolve the key in whichever order it exists and flip the sign to match.
+        conf, orient = {}, {}
+        for x, y_ in CONFIRMATORY:
+            if f"{y_}_vs_{x}" in raw_p:          # delta already = x - y_
+                conf[f"{x}>{y_}"] = raw_p[f"{y_}_vs_{x}"]; orient[f"{x}>{y_}"] = (f"{y_}_vs_{x}", +1.0)
+            elif f"{x}_vs_{y_}" in raw_p:        # delta = y_ - x, needs flipping
+                conf[f"{x}>{y_}"] = raw_p[f"{x}_vs_{y_}"]; orient[f"{x}>{y_}"] = (f"{x}_vs_{y_}", -1.0)
+        if not conf and rows:
+            print("\n  ! confirmatory family empty -- CONFIRMATORY names no comparable arm pair")
         if conf:
             adj = holm(conf)
             print("\nconfirmatory family (Holm-adjusted):")
             for k, p in sorted(adj.items(), key=lambda kv: kv[1]):
-                d = rows[k]["delta"]
+                src, sign = orient[k]
+                d = sign * rows[src]["delta"]
                 practical = abs(d) >= 0.005
-                verdict = ("BETTER" if d > 0 else "WORSE") if (p < 0.05 and practical) else (
-                    "below practical floor" if p < 0.05 else "not distinguishable")
-                print(f"  {k:<12} d={d:+.4f}  p_holm={p:.3f}  {verdict}")
-                rows[k]["p_holm"] = p
-                rows[k]["verdict"] = verdict
+                better, base = k.split(">")
+                verdict = (f"{better} BETTER than {base}" if d > 0 else
+                           f"{better} WORSE than {base}") if (p < 0.05 and practical) else (
+                    "significant but below practical floor" if p < 0.05 else "not distinguishable")
+                print(f"  {k:<10} d={d:+.4f}  p_holm={p:.3f}  {verdict}")
+                rows[src]["p_holm"] = p
+                rows[src]["verdict"] = verdict
         report[sname] = {"sigma_seed": sigma_seed,
                          "per_arm": {a: v["per_seed"] for a, v in arms.items()},
                          "contrasts": rows}

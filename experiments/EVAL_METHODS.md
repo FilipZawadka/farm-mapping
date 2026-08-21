@@ -108,3 +108,34 @@ No recipe-, architecture-, initialization- or band-level claim from any single-r
 Dietterich, *Neural Computation* 10(7):1895–1923 (1998) — Q3/Q8 taxonomy, §3.1 McNemar caveat, §3.5. Hoenig & Heisey, *Am. Stat.* 55(1) (2001) — MDE over observed power. Reimers & Gurevych, arXiv:1803.09578 — single-score comparison. Bouthillier et al., MLSys (2021) — variance accounting. Holm, *Scand. J. Stat.* 6:65–70 (1979). DeLong et al., *Biometrics* 44:837–845 (1988); Sun & Xu, *IEEE SPL* 21(11) (2014); Liu et al., *Stat. Med.* 25(7) (2006); Bandos, Rockette & Gur, *Stat. Med.* 24:2873–2893 (2005); Venkatraman & Begg, *Biometrika* 83:835–848 (1996); Westphal & Zapf, *SMMR* 33(4) (2024); Demler, Pencina & D'Agostino, *Stat. Med.* 31(23) (2012) — all rejected, §8. Guo et al., ICML (2017); Roelofs et al., AISTATS (2022); Dimitriadis, Gneiting & Jordan, *PNAS* 118(8) (2021); Gneiting, Balabdaoui & Raftery, *JRSS-B* 69(2) (2007) — calibration. Roberts et al., *Ecography* 40:913–929 (2017); Kattenborn et al., *ISPRS OJPRS* 5:100018 (2022) — block/leave-region-out design. Olofsson et al., *RSE* 148:42–57 (2014) — why this is a benchmark, not a map-accuracy statement. McDermott et al., NeurIPS (2024); Williams, arXiv:2007.01905 — AUROC over AUPRC, prevalence rescaling. Opitz & Burst, arXiv:1911.03347 — macro-F1.
 
 *In-repo:* `experiments/lib.py:56,102,206`; `scripts/full_metrics_report.py:66,77`; `docs/EXPERIMENT_COMPENDIUM.md` (Part 0 seed study, E2.2 floor); `experiments/gpu_results/e03_seed43–46/`.
+
+## Estimands: recipe vs artifact (added 2026-08-21, pre-results)
+
+Caught by a synthetic-data smoke test of `evaluate_r4.py` run before any round_4 result
+landed (`scratchpad/test_eval_r4.py`, injected ground truth b,d > a > e).
+
+Two different quantities were being printed side by side and were easy to conflate:
+
+| Estimand | Definition | Answers |
+|---|---|---|
+| **`dAUC_rec`** (PRIMARY) | difference in **mean per-seed AUC** | "is recipe B better than recipe A?" — Dietterich's Q8, the question every arm was built to answer |
+| `dAUC_ens` (secondary) | AUC of the **seed-averaged probability** | "is this 3-seed ensemble artifact better?" — closer to Q3 |
+
+`dAUC_ens` systematically **compresses** recipe differences, because averaging seeds
+removes independent noise and pushes both arms toward the ceiling. In the smoke test a
+true +0.0162 recipe effect appeared as +0.0004 at ensemble level — a ~40x shrink that
+would have been reported as "no difference". The report leads with `dAUC_rec`; `dAUC_ens`
+is retained as a column because a deployed model *is* an artifact, but it is not the test.
+
+`SE_total` keeps the mandatory seed term `sigma_seed^2 (1/n1 + 1/n2)`. Its row-noise
+component `se_boot` is taken from the ensemble bootstrap as a proxy for the
+mean-per-seed statistic; the seed term dominates it by roughly 5x, so the approximation
+does not move any verdict.
+
+### Bug found and fixed by the same test
+`CONFIRMATORY` was written as `("b","a")` while contrast rows are keyed by
+`itertools.combinations` order (`"a_vs_b"`). No key ever matched, so `conf` was empty and
+**the entire Holm-corrected confirmatory section silently printed nothing**. The pre-registered
+headline analysis would have been missing with no error raised. Keys are now resolved in
+either order with an explicit sign flip, verdicts name their direction
+("b BETTER than a"), and an explicit warning fires if the family ever resolves empty.

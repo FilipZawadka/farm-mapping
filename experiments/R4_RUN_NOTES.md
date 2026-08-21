@@ -44,3 +44,39 @@ Consequences:
 seeding via `worker_init_fn`. Given the paper's finding that the full augmentation stack
 is doing real work, restoring intended augmentation diversity is a plausible free win —
 and it must be judged against the seed band, like every other lever.
+
+## 3. `freeze0` is a COMPOUND lever, not a single factor (found 2026-08-21, mid-fleet)
+
+Triggered by arm A sitting at val F1 **0.640** while arm B sat at **0.824** — a gap far too
+large to be the 5-epoch frozen head start, since A unfroze 8 epochs earlier.
+
+`training/train.py:357-359`, the unfreeze transition:
+
+```python
+ctx.model.unfreeze_backbone()
+optimizer = _make_optimizer(ctx.model, ctx.cfg, lr_scale=0.1)   # <-- 10x LR drop
+scheduler = _build_scheduler(optimizer, ctx.cfg)                # <-- fresh cosine
+```
+
+The branch requires `freeze_backbone_epochs > 0`, so **it never executes for `freeze0`**:
+
+| Arm | Epochs 1-5 | Epoch 6+ backbone LR |
+|---|---|---|
+| A (`freeze=5`, the v6/v9/production recipe) | head only @ 1e-4 | **1e-5** (0.1x, fresh cosine) |
+| B (`freeze0`) | everything @ 1e-4 | **1e-4** (10x higher) |
+
+Confirmed in the MLflow `lr` metric: `ep5=9.755e-05 -> ep6=9.990e-06`, an exact 10x drop at
+the unfreeze epoch. A sweep of historical runs in `mlruns` shows almost all carry the ep6
+drop; freeze0 runs are the rare exception.
+
+**Consequence for the record.** The campaign's headline — "freeze0 is the only validated win
+in 20 runs" (+0.0045 AUC, +5.9 sigma) — remains true as a statement about *recipes*, but its
+stated *mechanism* is misattributed. `freeze0` changes two things at once: it removes the
+frozen warm-up **and** trains the backbone at 10x the learning rate for the entire remaining
+run. The second is very likely the dominant term. Any text claiming "freezing hurts" should
+instead say "the freeze schedule's coupled 0.1x LR drop hurts".
+
+**Untested and plausibly the actual best recipe:** freeze for 5 epochs, then unfreeze at
+**full** LR (`lr_scale=1.0`) — warm-up benefits without the LR penalty. Nothing in the
+20-run record tests this, because `lr_scale=0.1` is hard-coded rather than configurable.
+Proposed as arm **F** (3 seeds, ~$7, ~3 h).

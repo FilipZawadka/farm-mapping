@@ -95,11 +95,21 @@ def pull(host: str, port: int, names: list[str]) -> list[str]:
             f"cd {REMOTE_OUT} 2>/dev/null && "
             f"ls -d {globs} 2>/dev/null | tar czf - -T - 2>/dev/null || true"
         )
-        proc = subprocess.run(
-            ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=15",
-             "-p", str(port), f"root@{host}", remote],
-            capture_output=True, timeout=600,
-        )
+        try:
+            proc = subprocess.run(
+                ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=15",
+                 "-p", str(port), f"root@{host}", remote],
+                # Full-world scored parquets are ~5x the size of the training ones
+                # (152k rows vs 30k), and 600s was not enough -- a single slow pull
+                # raised TimeoutExpired and killed the whole collector.
+                capture_output=True, timeout=1800,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("  %s: pull timed out; will retry next poll", name)
+            continue
+        except Exception as exc:                 # never let one run end the watch
+            log.warning("  %s: pull failed (%s); will retry next poll", name, str(exc)[:120])
+            continue
         if proc.returncode != 0 or not proc.stdout:
             continue
         untar = subprocess.run(

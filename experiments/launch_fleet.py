@@ -102,7 +102,7 @@ def save_state(s: dict) -> None:
     STATE.write_text(json.dumps(s, indent=2))
 
 
-def launch_one(name: str) -> str | None:
+def launch_one(name: str, steps: tuple[str, ...] = ("train", "inference")) -> str | None:
     # Configs live under either configs/experiments/ (ablation campaign) or
     # configs/rachel_clusters/ (release + round arms); resolve whichever exists.
     for d in ("experiments", "rachel_clusters"):
@@ -115,7 +115,7 @@ def launch_one(name: str) -> str | None:
     log.info("launching %s ...", name)
     p = subprocess.run(
         [sys.executable, "-m", "training.runpod_launch", "--config", cfg,
-         "--steps", "train", "inference"],
+         "--steps", *steps],
         cwd=REPO, capture_output=True, text=True, timeout=1800,
     )
     for line in (p.stdout + p.stderr).splitlines():
@@ -198,13 +198,20 @@ def cmd_status() -> None:
         print(f"remaining: {', '.join(remaining)}")
 
 
-def cmd_run(max_concurrent: int, budget: float, poll: int) -> None:
+def cmd_run(max_concurrent: int, budget: float, poll: int,
+            steps: tuple[str, ...] = ("train", "inference")) -> None:
     st = load_state()
     queue = [n for n in ORDER if n not in st["launched"]]
     log.info("queue: %d configs, max_concurrent=%d, budget=$%.2f", len(queue), max_concurrent, budget)
 
     while queue:
-        me = account()
+        try:
+            me = account()
+        except Exception as exc:
+            # A transient DNS/network blip must not end a multi-hour fleet run.
+            log.warning("API unreachable (%s); retrying in %ds", str(exc)[:120], poll)
+            time.sleep(poll)
+            continue
         if reap_finished(me):
             me = account()                            # slots just freed; re-read
         balance, running = me["clientBalance"], len(me["pods"])
@@ -223,7 +230,7 @@ def cmd_run(max_concurrent: int, budget: float, poll: int) -> None:
 
         for _ in range(min(slots, len(queue))):
             name = queue.pop(0)
-            pod_id = launch_one(name)
+            pod_id = launch_one(name, steps)
             if pod_id:
                 st["launched"][name] = {"pod_id": pod_id, "ts": time.time()}
                 save_state(st)
@@ -254,8 +261,18 @@ def main() -> None:
                     help="stop launching when balance falls below this reserve")
     ap.add_argument("--poll", type=int, default=180)
     ap.add_argument("--status", action="store_true")
+    ap.add_argument("--order-file", help="file with one run name per line; replaces ORDER")
+    ap.add_argument("--state", help="alternate state file (keeps campaigns separate)")
+    ap.add_argument("--steps", nargs="*", default=["train", "inference"],
+                    help="pipeline steps to run (scoring passes use just: inference)")
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
+
+    global ORDER, STATE
+    if args.order_file:
+        ORDER = [l.strip() for l in Path(args.order_file).read_text().splitlines() if l.strip()]
+    if args.state:
+        STATE = Path(args.state)
 
     if args.list:
         for n in ORDER:
@@ -264,7 +281,7 @@ def main() -> None:
     if args.status:
         cmd_status()
         return
-    cmd_run(args.max_concurrent, args.budget, args.poll)
+    cmd_run(args.max_concurrent, args.budget, args.poll, tuple(args.steps))
 
 
 if __name__ == "__main__":

@@ -35,17 +35,36 @@ WANT = [
 ]
 
 
-def _api(query: str) -> dict:
+def _api(query: str, retries: int = 6) -> dict:
+    """Query the RunPod API, tolerating transient network failures.
+
+    check=True with no retry killed a live collector when the laptop briefly lost
+    DNS (curl exit 6, "couldn't resolve host"): one blip ended a watch that was
+    meant to run for hours. Transient loss of connectivity must not be fatal --
+    back off and try again.
+    """
     from training.env_loader import load_dotenv
     load_dotenv()
-    import os
+    import os, time as _t
     key = os.environ["RUNPOD_API_KEY"]
-    out = subprocess.run(
-        ["curl", "-s", "-H", f"Authorization: Bearer {key}", "-H", "Content-Type: application/json",
-         "-X", "POST", "https://api.runpod.io/graphql", "-d", json.dumps({"query": query})],
-        capture_output=True, text=True, check=True,
-    )
-    return json.loads(out.stdout)["data"]
+    last = None
+    for attempt in range(retries):
+        try:
+            out = subprocess.run(
+                ["curl", "-s", "--max-time", "45",
+                 "-H", f"Authorization: Bearer {key}", "-H", "Content-Type: application/json",
+                 "-X", "POST", "https://api.runpod.io/graphql", "-d", json.dumps({"query": query})],
+                capture_output=True, text=True, check=True,
+            )
+            body = json.loads(out.stdout)
+            if body.get("data") is not None:
+                return body["data"]
+            last = body.get("errors", body)
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+            last = exc
+        if attempt < retries - 1:
+            _t.sleep(min(60, 5 * 2 ** attempt))
+    raise RuntimeError(f"RunPod API failed after {retries} attempts: {str(last)[:300]}")
 
 
 def live_pod() -> tuple[str, int] | None:
@@ -107,13 +126,21 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--watch", action="store_true")
     ap.add_argument("--poll", type=int, default=600)
+    ap.add_argument("--names-file", help="file with one run name per line; replaces ORDER")
     args = ap.parse_args()
 
     sys.path.insert(0, str(REPO / "experiments"))
     from launch_fleet import ORDER
+    if args.names_file:
+        ORDER = [l.strip() for l in Path(args.names_file).read_text().splitlines() if l.strip()]
 
     while True:
-        ep = live_pod()
+        try:
+            ep = live_pod()
+        except Exception as exc:
+            log.warning("API unreachable (%s); retrying in %ds", str(exc)[:120], args.poll)
+            time.sleep(args.poll)
+            continue
         if not ep:
             log.error("no RUNNING pod with public SSH -- cannot reach the network volume. "
                       "Launch one pod to collect results.")

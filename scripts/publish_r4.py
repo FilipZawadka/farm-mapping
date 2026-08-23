@@ -37,20 +37,28 @@ ARMS = {
 
 
 def arm_of(run: str) -> tuple[str, str]:
-    """('b', '42') from world_v10_fourclass_r4_b_s42."""
-    tail = run.rsplit("_r4_", 1)[-1]        # e.g. 'b_s42'
+    """('b', '42') from world_v10_fourclass_r4_b_s42[_score]."""
+    tail = run.rsplit("_r4_", 1)[-1].removesuffix("_score")   # e.g. 'b_s42'
     arm, _, seed = tail.partition("_s")
     return arm, seed
 
 
 def runs_available() -> list[Path]:
-    return sorted(d for d in GPU.glob("world_v10_fourclass_r4_*")
+    """Full-world scoring dirs only (`*_score`, ~152k points).
+
+    The training dirs of the same name also hold a scored_candidates.parquet, but
+    it covers only the 29,734 split-assigned rows (inference.labeled_only=true) --
+    publishing those would put a partial map on the site under a name that looks
+    like a full release.
+    """
+    return sorted(d for d in GPU.glob("world_v10_fourclass_r4_*_score")
                   if (d / "scored_candidates.parquet").exists())
 
 
 def export_one(d: Path, out: Path, when: str, dry: bool) -> bool:
-    run = d.name
-    arm, seed = arm_of(run)
+    run = d.name.removesuffix("_score")      # dataset id = the model's name
+    arm, seed = arm_of(d.name)
+    train_dir = d.parent / run               # metrics live with the training run
     desc = ARMS.get(arm, arm)
     cmd = [sys.executable, str(EXPORT),
            "--parquet", str(d / "scored_candidates.parquet"),
@@ -64,8 +72,9 @@ def export_one(d: Path, out: Path, when: str, dry: bool) -> bool:
     for opt, fname in (("--metrics", "training_metrics.json"),
                        ("--per-country", "eval_metrics_per_country.json"),
                        ("--config", "config.yaml")):
-        if (d / fname).exists():
-            cmd += [opt, str(d / fname)]
+        src = d / fname if (d / fname).exists() else train_dir / fname
+        if src.exists():
+            cmd += [opt, str(src)]
     if dry:
         print("  would run:", " ".join(cmd[2:6]), "...")
         return True
@@ -101,14 +110,15 @@ def main() -> None:
 
     runs = runs_available()
     if args.only:
-        runs = [d for d in runs if d.name in set(args.only)]
+        want = set(args.only)
+        runs = [d for d in runs if d.name in want or d.name.removesuffix("_score") in want]
     if not runs:
         print("no collected runs with scored_candidates.parquet"); return
     print(f"publishing {len(runs)} run(s) -> {args.out}")
 
     # Publish the default first so it also leads the same-date group naturally.
     if args.default:
-        runs.sort(key=lambda d: d.name != args.default)
+        runs.sort(key=lambda d: d.name.removesuffix("_score") != args.default)
 
     ok = sum(export_one(d, args.out, args.date, args.dry_run) for d in runs)
     print(f"exported {ok}/{len(runs)}")

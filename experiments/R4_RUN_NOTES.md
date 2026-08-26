@@ -248,3 +248,27 @@ cut, separating the two things freeze0 changes at once (section 3). If the warm-
 is what avoids the bad basin, F should show A/C-like stability with B/D-like means
 — which would beat every arm here *and* archived v9, and would be a genuinely new
 recipe that no run in the project's history has tested.
+
+## 9. Post-publication defect: unscorable-label rows missing (user-reported, fixed 2026-08-26)
+
+The 18 published datasets had no predictions for the 2,574 rows labeled
+Farm: Unknown / Mixed / Other / PigsOrPoultry / Ambiguous. Cause: score configs
+inherited the TRAINING candidates dir (drops taxonomy-unmappable labels) instead of
+a scoreall dir built with `keep_unscorable_labels: true` as every historical release
+used. `labeled_only: false` could not resurrect rows absent from the candidate CSVs.
+
+Blast radius beyond the site: every campaign evaluation slice was under-covered —
+generalization 617/662, test 2,094/2,164, eval 523/590. The gaps had been
+misattributed to patch availability. It also masked a latent evaluate_r4 bug:
+y = (label != NotFarm) would count "Ambiguous" as a farm positive once scored;
+Ambiguous is now excluded from the binary target.
+
+Fixes: gen_score_configs sets keep_unscorable_labels + dedicated
+candidates_world_v10_r4_scoreall dir (self-test enforces both); all 18 rescored
+(154,908 rows each, matching v9); evaluate_r4 prefers full-world parquets.
+
+**Re-evaluation on complete slices: NO verdict changed.** All confirmatory
+contrasts remain not distinguishable; v9 still leads generalization (0.8740 vs
+best arm D 0.8611). Absolute eval-slice AUCs dropped ~0.005-0.009 for every model
+(a 0.9209->0.9148, v9 0.9105->0.9060) — the restored unknown-type farms are
+harder positives, uniformly. Site republished; v9 default.

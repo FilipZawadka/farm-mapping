@@ -33,6 +33,15 @@ def make(run: str, force: bool = False) -> Path | None:
         return out
     cfg = yaml.safe_load(src.read_text())
     cfg["run_name"] = f"{run}_score"
+    # Score EVERY row, including labels with no slot in the taxonomy
+    # (Farm: Unknown/Mixed/Other/PigsOrPoultry, Ambiguous). The training
+    # candidates dir drops those 2,597 rows, which silently shipped 18 datasets
+    # missing 2,574 predictions and under-covered every evaluation slice.
+    # keep_unscorable_labels keeps them as label=-1 (scored, never trained on),
+    # matching how every historical *_scoreall release was built.
+    data = cfg.setdefault("data", {})
+    data["keep_unscorable_labels"] = True
+    data["candidates_dir"] = "data/rachel_geometry_candidates/candidates_world_v10_r4_scoreall"
     inf = cfg.setdefault("inference", {})
     inf["labeled_only"] = False
     inf["checkpoint"] = f"data/output/{run}/best_model.pt"
@@ -56,7 +65,8 @@ def main() -> None:
     if not runs:
         gpu = REPO / "experiments" / "gpu_results"
         runs = sorted(d.name for d in gpu.glob("world_v10_fourclass_r4_*")
-                      if (d / "scored_candidates.parquet").exists())
+                      if (d / "scored_candidates.parquet").exists()
+                      and not d.name.endswith("_score"))   # never double-suffix
     print(f"generating scoring configs for {len(runs)} run(s)")
     made = [make(r, args.force) for r in runs]
     made = [m for m in made if m]
@@ -82,6 +92,8 @@ def main() -> None:
                 print(f"  *** {m.name}: bash -n FAILED: {p.stderr[:160]}"); bad += 1
             elif c.inference.labeled_only is not False:
                 print(f"  *** {m.name}: labeled_only not False"); bad += 1
+            elif not getattr(c.data, "keep_unscorable_labels", False):
+                print(f"  *** {m.name}: keep_unscorable_labels not True"); bad += 1
         except Exception as exc:
             print(f"  *** {m.name}: {type(exc).__name__}: {str(exc)[:160]}"); bad += 1
     print("all scoring configs valid" if not bad else f"*** {bad} INVALID ***")

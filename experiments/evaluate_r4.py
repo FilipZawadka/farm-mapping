@@ -51,7 +51,18 @@ def slices() -> dict[str, pd.DataFrame]:
     out = {}
     for name in ("generalization", "test", "eval"):
         d = v10[v10.cnn_split_assigned == name][["cid", "final_label"]].copy()
-        d["y"] = d.final_label.map(lambda l: np.nan if pd.isna(l) else int(l != "NotFarm"))
+        # Binary farm target. "Ambiguous" means the annotator could NOT tell
+        # whether it is a farm, so it belongs in neither class -- excluded, like
+        # NaN. Farm: Unknown/Mixed/Other/PigsOrPoultry ARE farms (type unknown)
+        # and count as positives. This mattered silently before: rows with these
+        # labels had no scores (the candidates dir dropped them), so the
+        # label!=NotFarm mapping never met an Ambiguous row; with full-world
+        # scoring it would have counted "can't tell" as "farm".
+        def _y(l):
+            if pd.isna(l) or l == "Ambiguous":
+                return np.nan
+            return int(l != "NotFarm")
+        d["y"] = d.final_label.map(_y)
         d = d.dropna(subset=["y"])
         if d.y.nunique() > 1:          # binary AUC needs both classes present
             out[name] = d.set_index("cid")
@@ -62,7 +73,11 @@ def slices() -> dict[str, pd.DataFrame]:
 
 def load_scores(run: str) -> pd.Series | None:
     """P(farm) by candidate id for a run name, or None if not collected."""
-    p = GPU / run / "scored_candidates.parquet"
+    # Prefer the full-world scoring pass: it covers rows the training run's
+    # candidates dir drops (unscorable labels), which the slices need.
+    p = GPU / f"{run}_score" / "scored_candidates.parquet"
+    if not p.exists():
+        p = GPU / run / "scored_candidates.parquet"
     if not p.exists():
         arch = {"v6": "v6", "v7": "v7", "v8": "v8", "v9": "v9"}.get(run)
         if arch is None:

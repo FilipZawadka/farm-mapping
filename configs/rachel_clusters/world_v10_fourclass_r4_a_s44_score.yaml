@@ -2,7 +2,7 @@
 # Scores every candidate, not just split-assigned rows, for website publication.
 run_name: world_v10_fourclass_r4_a_s44_score
 data:
-  candidates_dir: data/rachel_geometry_candidates/candidates_world_v10_r4
+  candidates_dir: data/rachel_geometry_candidates/candidates_world_v10_r4_scoreall
   parquet_source: data/rachel_geometry_candidates/all_countries/all_clusters_v10.parquet
   inspected_as_test: true
   include_unlabeled: true
@@ -19,6 +19,7 @@ data:
   - ALB
   - COD
   dmv_force_to_train_only: true
+  keep_unscorable_labels: true
 patches:
   patch_size_px: 128
   resolution_m: 10

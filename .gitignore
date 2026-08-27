@@ -9,6 +9,8 @@
 **/credentials*.json
 **/service-account*.json
 
+temp/
+
 data/
 
 output/

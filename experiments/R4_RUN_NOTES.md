@@ -272,3 +272,34 @@ contrasts remain not distinguishable; v9 still leads generalization (0.8740 vs
 best arm D 0.8611). Absolute eval-slice AUCs dropped ~0.005-0.009 for every model
 (a 0.9209->0.9148, v9 0.9105->0.9060) — the restored unknown-type farms are
 harder positives, uniformly. Site republished; v9 default.
+
+## 10. Why seed variance is so large: it is mostly cross-country score drift, not skill (2026-08-27)
+
+Decomposing generalization AUC into within-country ranking vs between-country mixing:
+
+| Arm | pooled sd | within-country sd | mean pooled | mean within |
+|---|---|---|---|---|
+| A | 0.0087 | 0.0088 | 0.8328 | 0.8439 |
+| C | 0.0049 | 0.0103 | 0.8327 | 0.8336 |
+| B | 0.0359 | 0.0248 | 0.8570 | 0.8322 |
+| D | 0.0332 | **0.0094** | 0.8611 | 0.8496 |
+| F | 0.0267 | 0.0113 | 0.8495 | 0.8487 |
+| E | 0.0115 | 0.0086 | 0.8154 | 0.8456 |
+| v9 | — | — | 0.8740 | 0.8683 |
+
+1. **The "1-in-3 collapse" of D and F is calibration, not skill.** d_s44's
+   within-country AUC (0.8470) is normal; only its cross-country score offsets
+   flipped from helping pooled AUC (+0.04 in siblings) to hurting (-0.02). Arm B
+   alone shows real within-country loss on top (s44: 0.8036).
+2. **Seed 44's offsets are shared across arms** (corr 0.67-0.79 between B/D/F per-
+   country offsets; e.g. ALB up +0.08..+0.19, BGD down). The seed fixes the data
+   shuffle + augmentation stream (worker RNG duplication makes the stream fully
+   deterministic), so it acts as a shared treatment; 10x backbone LR amplifies its
+   imprint into per-country score biases. At 1e-5 the same streams leave no trace.
+3. **Within-country, all six arms are nearly equal (0.832-0.850)** — the freeze0
+   arms' pooled advantage was largely between-country offset luck, and DenseNet's
+   pooled last place is offset misfortune (within 0.8456). v9's within-country
+   0.8683 exceeds every arm: the regression vs v9 is genuine ranking loss.
+4. **Metric guidance:** pooled OOD AUC entangles calibration drift with skill and
+   the drift is what is unstable; per-country ranking is ~3x more seed-stable and
+   is what the deployed map needs. Report both; per-country thresholds matter.

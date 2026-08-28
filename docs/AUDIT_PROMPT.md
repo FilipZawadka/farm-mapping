@@ -29,6 +29,19 @@ distrust-and-verify.
 4. Distinguish CONFIRMED (you reproduced it) from PLAUSIBLE (you suspect it).
    Never present a suspicion as a finding.
 5. Do not fix anything. Report; fixes are a separate decision.
+6. Anchor methods in the published literature. For every methodological judgment
+   (evaluation design, metrics, calibration, accuracy assessment, spatial CV)
+   the reference point is what comparable peer-reviewed work does — not first
+   principles alone. Comparable work: CAFO/livestock-facility detection from
+   remote sensing (e.g. Handan-Nader & Ho 2019, Robinson et al. poultry-CAFO
+   mapping), land-cover map accuracy assessment (Olofsson et al. 2014),
+   spatial cross-validation (Roberts et al. 2017, Ploton et al. 2020),
+   classifier comparison (Dietterich 1998), calibration (Guo et al. 2017).
+   The project's own survey lives in `paper/main.tex` + `paper/references.bib`
+   (34 entries) — start there, then search for anything newer. When you flag a
+   weakness, say what the standard published approach is; when you propose an
+   improvement, cite the precedent for it. A deviation from published practice
+   is not automatically wrong, but every unjustified deviation is a finding.
 
 ## What is already known — do not rediscover it, dig past it
 
@@ -71,7 +84,16 @@ F. **Statistics.** Re-derive one full contrast (b vs a on generalization) from
    parquets independently; check the SE_total formula, the Holm family, the
    Ambiguous exclusion, dedup on candidate_id, and whether per-country n>=20
    cutoffs hide anything.
-G. **Deployment surface.** ECE 0.16–0.20 OOD while the site shows confidence
+G. **Literature alignment.** Stage by stage (candidate generation, labeling
+   protocol, split design, training, evaluation, uncertainty reporting, map
+   publication), identify how comparable published systems do it and where this
+   project deviates. Specific checks: is accuracy reported the way map-accuracy
+   good practice requires (area-adjusted estimates per Olofsson et al., which we
+   do NOT currently produce)? Do comparable CAFO papers validate candidate
+   recall against external registries (they do — and we never have)? Is our
+   spatial leakage handling up to Roberts/Ploton standards? Would our headline
+   claims survive review at a venue where those papers appeared?
+H. **Deployment surface.** ECE 0.16–0.20 OOD while the site shows confidence
    tiers thresholded at 0.9/0.7/0.4 — quantify how misleading tiers are per
    country; propose per-country calibration if warranted.
 

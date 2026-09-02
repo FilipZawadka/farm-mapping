@@ -1012,7 +1012,104 @@ minority-type questions not at all.
 
 ---
 
-## 7. Limitations and planned work
+## 7. The round-four campaign: recipe levers under seed replication
+
+After the analyses above were completed, a fourth labeling round restructured the
+training data: everything not reserved for the generalization hold-out moved into
+train/val, absorbing the qualitative-evaluation slice entirely. Training data grew
+12,062 → 21,478 rows (+73%), validation 2,666 → 5,022; the test (2,094), eval
+(523) and generalization (617 usable / 662 labeled) hold-outs kept their
+membership. The frozen benchmark of Section 6 was thereby retired — its rows are
+now training data — so the campaign relies on the three surviving hold-outs, for
+which we verified **0.0% overlap** with the train/val sets of every archived model
+(v6–v9), and that each archived run trained on its recorded explicit splits.
+
+**Configuration.** All arms share the production recipe (byte-identical to v9):
+SoftCon Sentinel-2 ResNet-50 (Wang et al., 2024) with a band-mapped first
+convolution and a fresh 4-class linear head (NotFarm/Poultry/Pigs/Cattle); 9 input
+channels (B2,B3,B4,B8,B11,B12 + NDVI,NDBI,NDWI) at 64×64 px, per-channel
+train-set normalization; AdamW lr 1e-4, weight decay 0.01, cosine schedule
+(T=50), batch 32; backbone frozen 5 epochs then unfrozen with the optimizer
+rebuilt at 0.1× lr; early stopping patience 10 on validation macro-F1
+(best-val checkpoint shipped); flips (p=0.5), 90° rotations, scale jitter and
+cutout; no class balancing or weights; mixed precision. Each arm ran with seeds
+42/43/44, which control head initialization, shuffle order and augmentation
+draws; data, splits and imagery are byte-identical across all 18 runs.
+
+| Arm | Delta vs. A | Question |
+|---|---|---|
+| A | none | label-round effect (vs. archived v9) |
+| B | `freeze_backbone_epochs: 0` | does the freeze-phase result replicate? |
+| C | 6 bands (drop NDVI/NDBI/NDWI) | do the indices earn their place? |
+| D | B + C | do the levers compose? |
+| E | D + DenseNet-121 (ImageNet init, 7.0M vs 23.5M params) | architecture family |
+| F | `unfreeze_lr_scale: 1.0` (freeze kept) | freeze vs. learning rate, decomposed |
+
+Arm F was a disclosed mid-campaign amendment: code inspection revealed the
+unfreeze transition rebuilds the optimizer at 0.1× lr, so "no freeze" had always
+changed two factors at once; F keeps the warm-up and removes only the lr cut, a
+previously unrepresentable configuration. The amendment predates any arm-F result
+and made the Holm correction stricter for the original contrasts.
+
+**Protocol.** Recipe-level estimand (mean of per-seed AUCs, never a selected seed
+or the seed-ensemble); every contrast carries a mandatory seed term,
+SE² = SE²_boot + σ²_seed(1/n₁+1/n₂); Holm correction over the five confirmatory
+contrasts (Holm, 1979); practical floor 0.005 AUC. Seed sensitivity of fine-tuned
+pretrained models is well documented (Dodge et al., 2020; Picard, 2021), and the
+campaign reproduced its canonical failure mode live: with one collected seed,
+arm B "beat" A at +0.050 (p=0.003); with all three, +0.023 at p=0.29.
+
+**Farm ROC-AUC by slice** (3-seed mean ± sd; archived models on identical rows;
+Ambiguous excluded from the binary target, farm-type-unknown labels count as
+positives):
+
+| Model | Generalization (n=632) | Eval (n=572) | Test (n=2,162) |
+|---|---|---|---|
+| A (baseline) | 0.833 ± 0.009 | 0.915 ± 0.004 | 0.993 ± 0.000 |
+| B (freeze0) | 0.857 ± 0.036 | 0.929 ± 0.004 | 0.995 ± 0.001 |
+| C (6 bands) | 0.833 ± 0.005 | 0.917 ± 0.004 | 0.992 ± 0.001 |
+| D (B+C) | 0.861 ± 0.033 | 0.933 ± 0.006 | 0.994 ± 0.001 |
+| E (DenseNet) | 0.815 ± 0.012 | 0.934 ± 0.010 | 0.991 ± 0.001 |
+| F (full-lr unfreeze) | 0.850 ± 0.027 | 0.929 ± 0.007 | 0.995 ± 0.001 |
+| **archived v9 (round 3)** | **0.874** | 0.906 | 0.993 |
+
+**Results.** No confirmatory contrast survives correction on the primary
+(generalization) slice: b>a +0.024 (p_Holm=0.67), d>a +0.028 (0.60), f>a +0.017
+(0.80), b>f +0.008 (0.80), e>d −0.046 (0.16). Three findings organize the
+campaign:
+
+1. **The label-round effect is a trade.** Arm A vs. archived v9: eval +0.009,
+   test −0.000, generalization −0.041. The added rows are the absorbed
+   qual_eval slice, concentrated in the focal countries; denser in-domain data
+   specialized the model at the expense of transfer.
+2. **The freeze-phase result decomposes into a learning-rate effect with a
+   reliability cost.** F attributes ~two-thirds of the freeze0 delta to the
+   backbone lr (f>a +0.017) and little to the warm-up (b>f +0.008). The higher
+   rate quadruples seed variance (σ 0.005–0.009 at lr 1e-5 vs 0.027–0.036 at
+   1e-4), with one seed in three collapsing ~0.06 AUC in each of B, D, F.
+3. **The variance is predominantly cross-country calibration drift, not
+   skill.** Collapsing seeds have normal within-country AUC (arm D's weakest:
+   0.847 within vs 0.823 pooled); the collapsing seed's per-country offsets
+   correlate 0.67–0.79 across B/D/F (the seed fixes the shuffle+augmentation
+   stream — a shared treatment amplified by the higher lr). Within countries
+   all six arms are nearly equivalent (0.832–0.850) while archived v9 reaches
+   0.868: the regression vs v9 is genuine ranking loss. OOD calibration is
+   uniformly poor (ECE 0.16–0.20 vs ~0.01 in-domain): scores are rankings, not
+   probabilities.
+
+Secondary: the six-band null replicates cleanly (c vs a −0.000, lowest σ of any
+arm); DenseNet is confounded three ways but profiles as an in-domain specialist
+(best on eval, last pooled OOD, ordinary within-country); Morocco and India
+(AUC 0.65–0.76) are weakest under every recipe — between-country spread exceeds
+every between-arm difference.
+
+**Consequences.** v9 remains the production model (no arm matches it OOD, pooled
+or within-country; the pre-registered retention rule held). The six-band
+simplification is adopted; the freeze-phase change is not (gain inside seed
+noise, reliability cost unacceptable for single runs). Future annotation should
+target countries resembling the failure profile rather than the focal countries.
+
+## 8. Limitations and planned work
 
 Beyond the measurement issues above, four limits are structural.
 
@@ -1054,7 +1151,7 @@ assignment is prepared but the training run not yet performed.
 
 ---
 
-## 8. Conclusion
+## 9. Conclusion
 
 We have described a global pipeline for detecting and typing livestock facilities from
 Sentinel-2 imagery, covering 157,099 candidate clusters across 167 countries, and reported

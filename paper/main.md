@@ -1221,6 +1221,7 @@ Full BibTeX records in `paper/references.bib`.
 - **Brown, C. F., et al. (2022).** Dynamic World, near real-time global 10 m land use land cover mapping. *Scientific Data* 9:251.
 - **Chicco, D., and Jurman, G. (2020).** The advantages of the Matthews correlation coefficient (MCC) over F1 score and accuracy in binary classification evaluation. *BMC Genomics* 21(6).
 - **DeVries, T., and Taylor, G. W. (2017).** Improved regularization of convolutional neural networks with cutout. arXiv:1708.04552.
+- **Dodge, J., Ilharco, G., Schwartz, R., Farhadi, A., Hajishirzi, H., and Smith, N. A. (2020).** Fine-tuning pretrained language models: weight initializations, data orders, and early stopping. arXiv:2002.06305.
 - **Drusch, M., et al. (2012).** Sentinel-2: ESA's optical high-resolution mission for GMES operational services. *Remote Sensing of Environment* 120:25–36.
 - **Efron, B. (1987).** Better bootstrap confidence intervals. *JASA* 82(397):171–185.
 - **Fuller, A., Millard, K., and Green, J. R. (2023).** CROMA: Remote sensing representations with contrastive radar-optical masked autoencoders. *NeurIPS*.
@@ -1230,6 +1231,7 @@ Full BibTeX records in `paper/references.bib`.
 - **He, K., Zhang, X., Ren, S., and Sun, J. (2016).** Deep residual learning for image recognition. *CVPR*, 770–778.
 - **He, K., Fan, H., Wu, Y., Xie, S., and Girshick, R. (2020).** Momentum contrast for unsupervised visual representation learning. *CVPR*, 9729–9738.
 - **Helber, P., Bischke, B., Dengel, A., and Borth, D. (2019).** EuroSAT: A novel dataset and deep learning benchmark for land use and land cover classification. *IEEE JSTARS* 12(7):2217–2226.
+- **Holm, S. (1979).** A simple sequentially rejective multiple test procedure. *Scandinavian Journal of Statistics* 6(2):65–70.
 - **Kang, B., et al. (2020).** Decoupling representation and classifier for long-tailed recognition. *ICLR*.
 - **Lacoste, A., et al. (2023).** GEO-Bench: Toward foundation models for Earth monitoring. *NeurIPS Datasets and Benchmarks*.
 - **Li, Y., Wang, N., Shi, J., Hou, X., and Liu, J. (2018).** Adaptive batch normalization for practical domain adaptation. *Pattern Recognition* 80:109–117.
@@ -1242,6 +1244,7 @@ Full BibTeX records in `paper/references.bib`.
 - **Müller, R., Kornblith, S., and Hinton, G. E. (2019).** When does label smoothing help? *NeurIPS*.
 - **Paszke, A., et al. (2019).** PyTorch: An imperative style, high-performance deep learning library. *NeurIPS*.
 - **Pedregosa, F., et al. (2011).** Scikit-learn: Machine learning in Python. *JMLR* 12:2825–2830.
+- **Picard, D. (2021).** Torch.manual_seed(3407) is all you need: on the influence of random seeds in deep learning architectures for computer vision. arXiv:2109.08203.
 - **Ploton, P., et al. (2020).** Spatial validation reveals poor predictive performance of large-scale ecological mapping models. *Nature Communications* 11:4540.
 - **Roberts, D. R., et al. (2017).** Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure. *Ecography* 40(8):913–929.
 - **Robinson, C., et al. (2022).** Mapping industrial poultry operations at scale with deep learning and aerial imagery. *IEEE JSTARS* 15:7458–7471.

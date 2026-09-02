@@ -1048,8 +1048,9 @@ This also qualifies the learning-rate result immediately below. The sweep varied
 the \emph{base} rate while leaving the $0.1\times$ coupling intact, so the
 configuration that a staged warm-up would most plausibly want---warm-up followed
 by fine-tuning at the full rate---was never expressible, let alone tested. We
-report the recipe-level finding as it stands and add an arm to the round-four campaign that
-decomposes it: warm-up retained, unfreeze at full learning rate. Until that arm reports, the correct statement is
+report the recipe-level finding as it stands and add an arm that decomposes it
+in the round-four campaign of Section~\ref{sec:round4}: warm-up retained,
+unfreeze at full learning rate. Until that arm reports, the correct statement is
 that \emph{the freeze schedule's coupled learning-rate cut hurts}, not that
 freezing hurts. The base learning rate is otherwise at a sensible optimum:
 $3\times10^{-5}$ is clearly worse and $3\times10^{-4}$ trades \textsc{test}
@@ -1404,6 +1405,181 @@ examples, so it resolves farm-versus-not questions well and minority-type
 questions not at all.
 
 % =====================================================================
+\section{The round-four campaign: recipe levers under seed replication}
+\label{sec:round4}
+
+After the analyses above were completed, a fourth labeling round restructured
+the training data: every row not reserved for the generalization hold-out was
+assigned to train or validation, absorbing the qualitative-evaluation slice
+entirely. Training data grew from 12{,}062 to 21{,}478 rows (+73\%), validation
+from 2{,}666 to 5{,}022, while the test (2{,}094), eval (523) and generalization
+(617 usable; 662 labeled) hold-outs kept their membership. The frozen benchmark
+of Section~\ref{sec:measurement} was thereby retired---its rows are now training
+data---so the campaign relies on the three surviving hold-outs, for which we
+verified 0.0\% overlap with the train and validation sets of every archived
+model (v6--v9), and that each archived run trained on its recorded explicit
+splits. The campaign asks four pre-registered questions: did the new labels
+move performance; do the two recipe changes recommended by
+Section~\ref{sec:ablations} (no freeze phase; six bands) replicate and compose;
+and how does an ImageNet-initialized DenseNet-121 compare.
+
+\paragraph{Configuration.} All arms share the production recipe of
+Table~\ref{tab:r4recipe} except for the single lever each one changes
+(Table~\ref{tab:r4arms}). Every arm was trained three times, varying only the
+random seed $\in\{42,43,44\}$, which controls the initialization of the fresh
+four-class head, the per-epoch shuffle order, and every augmentation draw;
+data, splits and imagery are byte-identical across all 18 runs (verified at the
+level of candidate-id sets).
+
+\begin{table}[t]
+\centering
+\small
+\caption{The shared training configuration (arm A is exactly this recipe, which
+is byte-identical to the v9 production configuration).}
+\label{tab:r4recipe}
+\begin{tabular}{ll}
+\toprule
+Component & Setting \\
+\midrule
+Backbone & ResNet-50, SoftCon Sentinel-2 pretraining \citep{wang2024softcon} \\
+First convolution & band-mapped from the 13-band pretrained stem \\
+Head & fresh linear layer, 4 classes (NotFarm/Poultry/Pigs/Cattle) \\
+Input & 9 channels (B2,B3,B4,B8,B11,B12 + NDVI,NDBI,NDWI), $64{\times}64$\,px crop \\
+Normalization & per-channel, training-set statistics \\
+Optimizer & AdamW \citep{loshchilov2019adamw}, lr $10^{-4}$, weight decay $0.01$ \\
+Schedule & cosine \citep{loshchilov2017sgdr}, $T_{\max}=50$ epochs, batch size 32 \\
+Freeze phase & backbone frozen 5 epochs; optimizer rebuilt at $0.1\times$ lr on unfreeze \\
+Early stopping & patience 10 on validation macro-F1; best-val checkpoint shipped \\
+Augmentation & horizontal/vertical flips ($p{=}0.5$), $90^\circ$ rotations, scale jitter, cutout \citep{devries2017cutout} \\
+Class handling & no balancing, no class weights; mixed precision \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Arms. B--D and F are single- or double-lever deltas against A;
+arm F was added mid-campaign after code inspection revealed that the unfreeze
+transition rebuilds the optimizer at $0.1\times$ the learning rate, so that
+``no freeze'' had always changed two factors at once. F keeps the warm-up and
+removes only the learning-rate cut---a configuration that was previously
+unrepresentable. The amendment predates any arm-F result and made the
+Holm correction stricter for the original contrasts.}
+\label{tab:r4arms}
+\begin{tabular}{lll}
+\toprule
+Arm & Delta vs.\ A & Question \\
+\midrule
+A & none & label-round effect (vs.\ archived v9) \\
+B & \code{freeze\_backbone\_epochs: 0} & does the freeze-phase result replicate? \\
+C & 6 bands (drop NDVI/NDBI/NDWI) & do the indices earn their place? \\
+D & B $+$ C & do the levers compose? \\
+E & D $+$ DenseNet-121 (ImageNet init, 7.0M vs.\ 23.5M params) & architecture family \\
+F & \code{unfreeze\_lr\_scale: 1.0} (freeze kept) & freeze vs.\ learning rate, decomposed \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Protocol.} The primary estimand is recipe-level: the mean of
+per-seed AUCs, never a selected seed and never the seed-ensemble. Every
+contrast's standard error carries a mandatory seed term,
+$\mathrm{SE}^2 = \mathrm{SE}^2_{\text{boot}} +
+\sigma^2_{\text{seed}}(1/n_1{+}1/n_2)$, with $\sigma_{\text{seed}}$ pooled per
+slice; the five confirmatory contrasts are Holm-corrected
+\citep{holm1979simple} and additionally judged against a practical floor of
+0.005 AUC. Seed replication is not optional in this regime: seed sensitivity
+of fine-tuned pretrained models is well documented
+\citep{dodge2020finetuning,picard2021seed}, and this campaign reproduced its
+canonical failure mode live---with one collected seed, arm B ``beat'' A at
+$+0.050$ AUC ($p=0.003$); with all three, the same contrast is $+0.023$ at
+$p=0.29$.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Farm-vs-not ROC-AUC by slice: three-seed mean $\pm$ sd per arm;
+archived models scored on identical rows. Generalization $n{=}632$, eval
+$n{=}572$, test $n{=}2{,}162$ (rows labeled \emph{Ambiguous} are excluded from
+the binary target; farm-type-unknown labels count as positives).}
+\label{tab:r4results}
+\begin{tabular}{lccc}
+\toprule
+Model & Generalization & Eval & Test \\
+\midrule
+A (baseline) & $0.833 \pm 0.009$ & $0.915 \pm 0.004$ & $0.993 \pm 0.000$ \\
+B (freeze0) & $0.857 \pm 0.036$ & $0.929 \pm 0.004$ & $0.995 \pm 0.001$ \\
+C (6 bands) & $0.833 \pm 0.005$ & $0.917 \pm 0.004$ & $0.992 \pm 0.001$ \\
+D (B$+$C) & $0.861 \pm 0.033$ & $0.933 \pm 0.006$ & $0.994 \pm 0.001$ \\
+E (DenseNet) & $0.815 \pm 0.012$ & $0.934 \pm 0.010$ & $0.991 \pm 0.001$ \\
+F (full-lr unfreeze) & $0.850 \pm 0.027$ & $0.929 \pm 0.007$ & $0.995 \pm 0.001$ \\
+\midrule
+archived v9 (round 3) & 0.874 & 0.906 & 0.993 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Results.} No confirmatory contrast survives correction on the
+primary (generalization) slice: $b{>}a$ $+0.024$ ($p_{\text{Holm}}=0.67$),
+$d{>}a$ $+0.028$ ($p=0.60$), $f{>}a$ $+0.017$ ($p=0.80$), $b{>}f$ $+0.008$
+($p=0.80$), $e{>}d$ $-0.046$ ($p=0.16$); on the saturated test slice the only
+nominally significant contrast ($e{>}d$, $-0.003$) is below the practical
+floor. Three findings organize the campaign.
+
+\emph{(i) The label-round effect is a trade.} Arm A isolates the data change:
+against archived v9 it gains $+0.009$ on in-domain eval, is unchanged on test
+($-0.000$), and loses $0.041$ on generalization. The added rows are the
+absorbed qualitative-evaluation slice, concentrated in the focal countries;
+denser in-domain data specialized the model at the expense of out-of-domain
+transfer.
+
+\emph{(ii) The freeze-phase result of Section~\ref{sec:ablations} decomposes
+into a learning-rate effect with a reliability cost.} Arm F attributes
+roughly two thirds of the freeze0 delta to the backbone learning rate
+($f{>}a$, $+0.017$) and little to the warm-up itself ($b{>}f$, $+0.008$).
+The higher rate also quadruples seed variance: arms training the backbone at
+$10^{-5}$ show $\sigma_{\text{seed}} = 0.005$--$0.009$ on generalization,
+arms at $10^{-4}$ show $0.027$--$0.036$, with one seed in three collapsing by
+$\sim$0.06 AUC in each of B, D and F.
+
+\emph{(iii) The variance is predominantly cross-country calibration drift,
+not ranking skill.} Decomposing pooled generalization AUC into a
+size-weighted mean of within-country AUCs, the collapsing seeds have normal
+within-country skill (e.g.\ arm D's weakest seed: 0.847 within-country
+against a pooled 0.823); what moves is the alignment of per-country score
+levels with per-country prevalence. The collapsing seed's per-country offsets
+correlate at 0.67--0.79 across arms B, D and F---the seed fixes the shuffle
+and augmentation stream, a shared treatment whose imprint the higher learning
+rate amplifies. Within countries the six arms are nearly equivalent
+(0.832--0.850), while archived v9 reaches 0.868: the regression against v9 is
+genuine ranking loss, and pooled cross-country AUC is the less stable and less
+deployment-relevant of the two views. Calibration is uniformly poor
+out-of-domain (ECE 0.16--0.20 \citep{guo2017calibration}, vs.\ $\sim$0.01
+in-domain), so published scores function as rankings rather than
+probabilities.
+
+Secondary results: dropping the spectral indices replicates as a clean null
+($c$ vs.\ $a$: $-0.000$ on generalization) with the lowest seed variance of
+any arm, confirming Section~\ref{sec:ablations} on fresh labels; the DenseNet
+arm is uninterpretable as an architecture verdict (it differs from D in
+architecture, pretraining and capacity simultaneously) but its
+profile---best on in-domain eval (0.934), last pooled out-of-domain
+(0.815), ordinary within-country (0.846)---is the signature of an in-domain
+specialist. Per-country results show the same two countries (Morocco, India;
+AUC 0.65--0.76) weakest under every recipe: the between-country spread
+exceeds every between-arm difference.
+
+\paragraph{Consequences.} The round-three model remains the production model:
+no round-four arm matches its out-of-domain ranking, pooled or within-country,
+and the pre-registered retention rule held. Of the previously recommended
+changes, the six-band simplification is adopted (equal accuracy, best
+reproducibility, three fewer channels); the freeze-phase change is not---its
+expected gain does not clear seed noise and its reliability cost is
+unacceptable for single production runs. For future label rounds the campaign
+implies that additional focal-country data does not improve, and likely
+harms, the global map; annotation effort should target countries resembling
+the current failure profile.
+
 \section{Limitations and planned work}
 \label{sec:limitations}
 % =====================================================================

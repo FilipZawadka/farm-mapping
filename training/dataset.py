@@ -1012,10 +1012,36 @@ def build_splits(
 
     region_w = None
     class_w = None
+    rb = getattr(cfg.training, "region_balancing", None)
+    rb_enabled = bool(rb is not None and rb.enabled)
+    if rb_enabled and cfg.training.upsample_minority_regions:
+        raise ValueError(
+            "training.region_balancing.enabled and training.upsample_minority_regions "
+            "are mutually exclusive -- both are per-country sampler weights"
+        )
     if cfg.training.upsample_minority_regions:
         region_w = _compute_region_weights(
             meta_clean.iloc[train_idx], candidates,
         )
+    if rb_enabled:
+        # Grouped-country / bucket / capped sampling with optional class
+        # conditioning (training/balancing.py). The report is attached to the
+        # dataset so train.py can persist it beside the checkpoint and log the
+        # achieved distribution to MLflow -- a run must be able to prove it
+        # really sampled balanced, not just that the flag was set.
+        from .balancing import UNKNOWN_ISO3, compute_region_balanced_weights, derive_iso3, format_report
+        train_meta = meta_clean.iloc[train_idx]
+        iso3 = derive_iso3(train_meta["candidate_id"], candidates)
+        n_unknown = int((iso3 == UNKNOWN_ISO3).sum())
+        if n_unknown:
+            log.warning(
+                "Region balancing: %d/%d train rows have no resolvable country "
+                "(grouped as %s)", n_unknown, len(iso3), UNKNOWN_ISO3,
+            )
+        train_labels = meta["_label"].to_numpy()[train_idx]
+        region_w, sampling_report = compute_region_balanced_weights(iso3, train_labels, rb)
+        log.info("%s", format_report(sampling_report))
+        train_ds.sampling_report = sampling_report
     if getattr(cfg.training, "balanced_class_sampling", False):
         class_w = _compute_class_weights(
             meta_clean.iloc[train_idx], candidates,

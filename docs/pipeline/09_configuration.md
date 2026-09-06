@@ -105,6 +105,7 @@ Loop knobs.
 | **`upsample_minority_regions`** | `false` | Per-country sampler weights. |
 | **`balanced_country_splits`** | `false` | Country-balanced val/test. |
 | **`balanced_class_sampling`** | `false` | Per-class sampler weights (multiplies with region). |
+| **`region_balancing`** | disabled | Grouped-country / bucket / capped sampler with class conditioning (`training/balancing.py`, `docs/COUNTRY_BALANCING_PLAN.md`). Keys: `enabled`, `scheme` (`grouped_country` \| `bucket` \| `capped`), `min_country_rows` (300), `buckets` (`{us: [USA], europe: [EUROPE], rest: ["*"]}`), `max_share` (0.2), `temperature` (null = uniform, 1 = natural, 2 = square-root), `class_conditional` (true), `class_axis` (`binary` \| `full`), `max_weight` (10). Mutually exclusive with `upsample_minority_regions`. Writes `sampling_report.json` beside `best_model.pt`. |
 | `channel_subset` | `null` | e.g. `[B2, B3, B4, NDWI]` — subset by name at train time. |
 | `crop_center_px` | `null` | Center-crop patches at train time (64 = 640 m context). |
 | `resume_from` | `null` | Path to a checkpoint to continue training from. |

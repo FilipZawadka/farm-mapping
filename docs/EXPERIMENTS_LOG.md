@@ -875,3 +875,34 @@ with round_3's cap-size insensitivity and the balancing verdict, this
 strengthens the log's standing conclusion: training-recipe tweaks on the
 current label set are exhausted — the leverage is in labels (Pigs/Cattle,
 balanced round_4 promotion) and deployment-side operating points.
+
+## 2026-09-06 — Country-balancing campaign (planned; arms G/H/I + ablation J)
+
+**Problem.** The round_4 train split is confounded on two sides: ~3/4 of the farm
+positives come from USA + MEX, while the absorbed world review pool (~9.4k rows,
+82% NotFarm) contributes negatives from ~100 countries, about twenty of which are
+100% NotFarm in the labels (RUS ≈ a quarter of all negatives; UKR, BLR, MYS, IND,
+TUR, GBR, KAZ, ...). A country-only classifier would score ~0.85 vs a 0.55 majority
+baseline on a reconstruction of the pool. The old inverse-frequency country sampler
+stays closed (1-row countries drawn ~100×/epoch); the new sampler pools, buckets or
+caps instead, and clips every weight.
+
+**What was built** (`training/balancing.py`, config block `training.region_balancing`):
+three share laws — grouped countries (≥300 rows own group, rest pooled by UN M49
+macro-region), three buckets (us / europe / rest), per-country cap (20%, water-filling)
+— each combined with class conditioning: the class mix inside every group follows the
+global prior, the prior is pinned by raking (no `v9_bal`-style prior shift), and a
+single-label country forfeits the part of its share it cannot support. Runs write
+`sampling_report.json` (natural / target / achieved shares, label~region NMI before and
+after, Kish ESS) and push the headline numbers to MLflow. Audit + what-if:
+`scripts/audit_country_balance.py`; configs: `experiments/gen_balancing_configs.py`
+(`world_v10_fourclass_r4_{g,h,i,j}_s{42,43,44}`, control = round_4 arm A); evaluation:
+`experiments/evaluate_balancing.py` (confirmatory g>a, h>a, i>a on generalization AUC,
+Holm m=3; diagnostics: within-country AUC, per-bucket P(farm|NotFarm) spread, per-country
+FPR@0.4 on val for the NotFarm-only countries).
+
+**Key finding from the what-if audit (synthetic reconstruction).** Balancing region
+marginals alone does *not* reduce label~region dependence (NMI 0.46 → 0.46) and shifts
+the class prior to 58% NotFarm; with class conditioning the dependence falls (grouped
+0.46 → 0.22, buckets 0.24 → 0.00, capped 0.48 → 0.26) at an unchanged prior. Full plan,
+literature and pre-registration: `docs/COUNTRY_BALANCING_PLAN.md`. Results: pending.

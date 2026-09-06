@@ -33,6 +33,9 @@ WANT = [
     "eval_metrics_per_country.json", "generalization_metrics_per_country.json",
     "qual_eval_metrics_per_country.json",
     "scored_candidates.parquet", "config.yaml",
+    # Written only by region-balanced runs (docs/COUNTRY_BALANCING_PLAN.md):
+    # proves what the sampler did; evaluate_balancing.py reads it.
+    "sampling_report.json",
 ]
 
 

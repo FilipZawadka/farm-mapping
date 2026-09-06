@@ -431,9 +431,12 @@ def train(cfg: PipelineConfig) -> Path:
     # Use weighted sampler when upsampling minority regions
     train_sampler = None
     train_shuffle = True
+    region_balancing = getattr(cfg.training, "region_balancing", None)
+    rb_enabled = bool(region_balancing is not None and region_balancing.enabled)
     use_weighted = (
         cfg.training.upsample_minority_regions
         or getattr(cfg.training, "balanced_class_sampling", False)
+        or rb_enabled
     )
     if use_weighted and hasattr(train_ds, "sample_weights"):
         train_sampler = WeightedRandomSampler(
@@ -443,10 +446,15 @@ def train(cfg: PipelineConfig) -> Path:
         )
         train_shuffle = False  # sampler and shuffle are mutually exclusive
         log.info(
-            "Using WeightedRandomSampler (region=%s, class=%s)",
+            "Using WeightedRandomSampler (region=%s, class=%s, region_balancing=%s)",
             cfg.training.upsample_minority_regions,
             getattr(cfg.training, "balanced_class_sampling", False),
+            region_balancing.scheme if rb_enabled else "off",
         )
+    elif rb_enabled:
+        # build_splits must have attached weights; anything else means the
+        # config asked for balancing that never happened.
+        raise RuntimeError("region_balancing.enabled but train_ds carries no sample_weights")
 
     n_workers = getattr(cfg.training, "dataloader_workers", 0)
     worker_init = _dataset_worker_init if n_workers > 0 else None
@@ -511,6 +519,16 @@ def train(cfg: PipelineConfig) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     best_path = output_dir / "best_model.pt"
 
+    # What the sampler actually did (natural vs achieved country/class shares,
+    # label~region dependence, effective sample size). Collected with the
+    # metrics so an evaluation can verify an arm ran balanced.
+    sampling_report = getattr(train_ds, "sampling_report", None)
+    if sampling_report is not None:
+        import json as _json
+        report_path = output_dir / "sampling_report.json"
+        report_path.write_text(_json.dumps(sampling_report, indent=2))
+        log.info("Sampling report -> %s", report_path)
+
     ctx = _TrainCtx(model, criterion, device, use_amp, scaler, cfg, best_path)
 
     mlflow.set_tracking_uri(cfg.mlflow.tracking_uri)
@@ -520,6 +538,17 @@ def train(cfg: PipelineConfig) -> Path:
         extra_params = {"train_size": len(train_ds), "val_size": len(val_ds), "test_size": len(test_ds)}
         if inspected_ds:
             extra_params["inspected_size"] = len(inspected_ds)
+        if sampling_report is not None:
+            dep = sampling_report["label_region_dependence"]
+            extra_params.update({
+                "region_balancing_scheme": sampling_report["scheme"],
+                "region_balancing_class_conditional": sampling_report["class_conditional"],
+                "region_balancing_max_weight": sampling_report["max_weight"],
+                "region_balancing_n_groups": sampling_report["n_groups"],
+                "sampling_nmi_natural": dep["nmi_natural"],
+                "sampling_nmi_achieved": dep["nmi_achieved"],
+                "sampling_ess_ratio": sampling_report["ess_ratio"],
+            })
         if resume_from:
             extra_params["resumed_from"] = str(resume_from)
             extra_params["resume_start_epoch"] = prior_epoch + 1

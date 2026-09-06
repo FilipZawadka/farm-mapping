@@ -45,11 +45,11 @@ CONFIRMATORY = [("b", "a"), ("d", "a"), ("e", "d"),
 
 
 # ---------------------------------------------------------------- slices
-def slices() -> dict[str, pd.DataFrame]:
+def slices(names: tuple[str, ...] = ("generalization", "test", "eval")) -> dict[str, pd.DataFrame]:
     v10 = pd.read_parquet(V10)
     v10["cid"] = v10.cluster_id.astype(str)
     out = {}
-    for name in ("generalization", "test", "eval"):
+    for name in names:
         d = v10[v10.cnn_split_assigned == name][["cid", "final_label"]].copy()
         # Binary farm target. "Ambiguous" means the annotator could NOT tell
         # whether it is a farm, so it belongs in neither class -- excluded, like

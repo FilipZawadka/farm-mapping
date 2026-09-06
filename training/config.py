@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +484,37 @@ class AugmentationConfig(BaseModel):
     recompute_indices: bool = False
 
 
+class RegionBalancingConfig(BaseModel):
+    """Region-balanced train sampling (training/balancing.py; docs/COUNTRY_BALANCING_PLAN.md).
+
+    Supersedes the inverse-frequency country sampler (``upsample_minority_regions``),
+    which is structurally unusable on the world data (a 1-row country would be
+    drawn ~100x per epoch). The two are mutually exclusive.
+    """
+    enabled: bool = False
+    # grouped_country: every country with >= min_country_rows train rows is its
+    #   own group, smaller ones pool into rest_<macro-region>; equal share per group.
+    # bucket: explicit buckets (default us / europe / rest); equal share per bucket.
+    # capped: natural country shares, but no country above max_share of an epoch
+    #   (excess redistributed pro rata).
+    scheme: Literal["grouped_country", "bucket", "capped"] = "grouped_country"
+    min_country_rows: int = Field(default=300, ge=1)
+    # bucket name -> list of ISO3 codes, macro-region names (EUROPE, ASIA, AFRICA,
+    # OCEANIA, NORTH_AMERICA, LATIN_AMERICA) or "*" for everything else.
+    buckets: Optional[dict[str, list[str]]] = None
+    max_share: float = Field(default=0.20, gt=0.0, le=1.0)
+    # Share law for grouped_country / bucket: null = uniform over groups;
+    # T > 0 = share ~ n^(1/T) (T=1 natural, T=2 square-root, large T -> uniform).
+    temperature: Optional[float] = Field(default=None, gt=0.0)
+    # Reshape the class mix inside every group toward the global train prior so
+    # label and region are independent in the sampled stream -- the actual
+    # anti-shortcut term. "binary" conditions on farm/not-farm, "full" on every class.
+    class_conditional: bool = True
+    class_axis: Literal["binary", "full"] = "binary"
+    # Per-row weights are normalised to mean 1 and clipped to [1/max_weight, max_weight].
+    max_weight: float = Field(default=10.0, ge=1.0)
+
+
 class TrainingConfig(BaseModel):
     epochs: int = 30
     batch_size: int = 32
@@ -525,6 +556,9 @@ class TrainingConfig(BaseModel):
     # When combined with upsample_minority_regions, sampler weights multiply
     # so train batches are balanced across both axes.
     balanced_class_sampling: bool = False
+    # Region-balanced sampling (grouped countries / buckets / per-country cap);
+    # see RegionBalancingConfig. Mutually exclusive with upsample_minority_regions.
+    region_balancing: RegionBalancingConfig = Field(default_factory=RegionBalancingConfig)
     augmentation: AugmentationConfig = Field(default_factory=AugmentationConfig)
     # Ablation: use only a subset of channels at training time (by band name).
     # None = use all channels from patches. E.g. ["B2","B3","B4","NDWI"] for RGB+NDWI.
@@ -544,6 +578,15 @@ class TrainingConfig(BaseModel):
     # Use for stage-2 recipes (e.g. cRT classifier retraining) where the
     # checkpoint is a warm start, not a continuation.
     resume_reset_epoch: bool = False
+
+    @model_validator(mode="after")
+    def _one_region_sampler(self) -> "TrainingConfig":
+        if self.region_balancing.enabled and self.upsample_minority_regions:
+            raise ValueError(
+                "training.region_balancing.enabled and training.upsample_minority_regions "
+                "are mutually exclusive -- both are per-country sampler weights"
+            )
+        return self
 
 
 class MLflowConfig(BaseModel):

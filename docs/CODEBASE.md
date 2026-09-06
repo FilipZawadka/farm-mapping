@@ -567,6 +567,16 @@ training:
   upsample_minority_regions: true
   balanced_country_splits: false
   balanced_class_sampling: false           # multiplies with region weights
+  region_balancing:                        # docs/COUNTRY_BALANCING_PLAN.md (exclusive with upsample_minority_regions)
+    enabled: false
+    scheme: grouped_country | bucket | capped
+    min_country_rows: 300                  # grouped_country: smaller countries pool into rest_<macro-region>
+    buckets: {us: [USA], europe: [EUROPE], rest: ["*"]}   # bucket scheme
+    max_share: 0.2                         # capped scheme: no country above this share of an epoch
+    temperature: null                      # null = uniform group shares, 1 = natural, 2 = square-root
+    class_conditional: true                # class mix inside each group follows the global prior
+    class_axis: binary | full
+    max_weight: 10.0                       # per-row weights clipped to [1/max_weight, max_weight]
   channel_subset: null | [B2, B3, B4, NDWI]   # ablations
   crop_center_px:  null | 64 | 48              # ablations
   augmentation: { … per-aug toggles … }

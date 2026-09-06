@@ -26,7 +26,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "experiments"))
 
-SEEDS = (42, 43, 44)
+# The layout of the real campaign: round_4 arm A has three seeds, every balanced
+# arm has the single seed-44 run.
+RUN_SEEDS = {"a": (42, 43, 44), "g": (44,), "h": (44,), "i": (44,), "j": (44,)}
 # arm -> (skill, region offset strength); offset pushes scores up in the US/MEX
 # and down in Europe regardless of the label.
 TRUTH = {"a": (1.4, 1.2), "g": (2.0, 0.1), "h": (1.6, 0.3), "i": (1.7, 0.4), "j": (1.4, 1.1)}
@@ -68,7 +70,7 @@ def build(tmp: Path) -> tuple[Path, Path]:
     region = np.where(v10.ADM0.isin(us), 1.0, np.where(v10.ADM0.isin(europe), -1.0, 0.0))
     gpu = tmp / "gpu_results"
     for arm, (skill, offset) in TRUTH.items():
-        for s in SEEDS:
+        for s in RUN_SEEDS[arm]:
             r = np.random.default_rng(1000 * s + ord(arm))
             logit = skill * (2 * y - 1) + offset * region + r.normal(0, 1.0, len(y)) + r.normal(0, 0.15)
             p_farm = 1 / (1 + np.exp(-logit))
@@ -115,7 +117,10 @@ def main() -> None:
         assert "RUS" in rep["val"]["country_fpr"] and "UKR" in rep["val"]["country_fpr"]
         assert rep["val"]["country_fpr"]["RUS"]["fpr"]["a"] < rep["val"]["country_fpr"]["RUS"]["fpr"]["g"] + 1.0
         assert "within_country" in gen and set(gen["within_country"]) == set(TRUTH)
-        assert len(rep["sampling_reports"]) == 4 * len(SEEDS)
+        assert len(rep["sampling_reports"]) == 4
+        assert "measured on 1 arm(s) with >1 seed" in out       # sigma_seed from arm A's three seeds
+        assert "arms with a single run: g, h, i, j" in out
+        assert len(gen["per_arm"]["a"]) == 3 and len(gen["per_arm"]["g"]) == 1
         assert "per_class" in rep and rep["per_class"]
         print("\nevaluate_balancing smoke test passed")
 

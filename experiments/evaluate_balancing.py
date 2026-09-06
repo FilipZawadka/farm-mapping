@@ -1,9 +1,17 @@
-"""Evaluate the region-balancing campaign (arms G/H/I + ablation J) against round_4 arm A.
+"""Evaluate the region-balancing campaign (arms G/H/I, optional ablation J) against round_4 arm A.
 
 Reuses the round_4 machinery (experiments/evaluate_r4.py: slices, score loading,
 per-arm seed replicates, SE_total with the mandatory seed term, Holm) with its
 own pre-registered family, and adds the diagnostics this campaign is about:
 does the model still score a patch by *where* it is rather than what it shows?
+
+Design as run: ONE run per balanced arm (seed 44) against round_4 arm A, whose
+three seeds (42/43/44) supply the measured sigma_seed per slice. With one run per
+arm the contrasts are artifact-level (Dietterich Q3: "does this checkpoint rank
+the rows better"), not recipe-level; SE_total still carries the seed term
+sigma_seed^2 (1/n_a + 1/n_g), so a single-run delta inside the seed band is
+reported as not distinguishable rather than as a win. Regenerate with
+`gen_balancing_configs.py --seeds 42 43 44` for the recipe-level design.
 
 Primary (confirmatory, Holm m=3, docs/COUNTRY_BALANCING_PLAN.md):
     g > a, h > a, i > a on generalization farm ROC-AUC.
@@ -58,6 +66,10 @@ THRESHOLD = 0.4          # shipped OOD operating point (EVAL_METHODS E2.1)
 DECISION_SLICES = ("generalization", "test", "eval")
 DIAG_SLICES = ("generalization", "test", "val")
 BUCKET_ORDER = ("us", "europe", "rest")
+# Fallback sigma_seed per slice when no arm on the slice has >1 seed: the values
+# measured on five identical-recipe v9 runs (EVAL_METHODS.md section 3); val is
+# in-domain like eval and borrows its figure.
+SIGMA_SEED_PRIOR = {"generalization": 0.0080, "eval": 0.0053, "test": 0.0006, "val": 0.0053}
 
 
 # ------------------------------------------------------------- helpers
@@ -258,9 +270,18 @@ def main() -> None:
                 sigmas.append(vals.std(ddof=1))
             print(f"{a:<4} {ARMS[a]:<40} {' '.join(f'{x:.4f}' for x in vals):<28} {vals.mean():>8.4f} "
                   f"{(vals.std(ddof=1) if len(vals) > 1 else float('nan')):>8.4f}")
-        sigma_seed = float(np.mean(sigmas)) if sigmas else 0.0078
-        print(f"\npooled sigma_seed on this slice: {sigma_seed:.4f}"
+        if sigmas:
+            sigma_seed = float(np.mean(sigmas))
+            src = f"measured on {len(sigmas)} arm(s) with >1 seed"
+        else:
+            sigma_seed = SIGMA_SEED_PRIOR.get(sname, 0.0078)
+            src = "imported from the v9 five-seed study (no arm has >1 seed here)"
+        print(f"\npooled sigma_seed on this slice: {sigma_seed:.4f} [{src}]"
               f"   (single-run decision band 2*sqrt2*sigma = +/-{2 * np.sqrt(2) * sigma_seed:.4f})")
+        single = [a for a, v in arms.items() if len(v["per_seed"]) == 1]
+        if single:
+            print(f"arms with a single run: {', '.join(single)} -- contrasts involving them are "
+                  f"artifact-level (Q3), see module docstring")
         entry["sigma_seed"] = sigma_seed
         entry["per_arm"] = {a: v["per_seed"] for a, v in arms.items()}
 

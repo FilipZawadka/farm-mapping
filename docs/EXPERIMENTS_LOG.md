@@ -896,7 +896,8 @@ single-label country forfeits the part of its share it cannot support. Runs writ
 `sampling_report.json` (natural / target / achieved shares, label~region NMI before and
 after, Kish ESS) and push the headline numbers to MLflow. Audit + what-if:
 `scripts/audit_country_balance.py`; configs: `experiments/gen_balancing_configs.py`
-(`world_v10_fourclass_r4_{g,h,i,j}_s{42,43,44}`, control = round_4 arm A); evaluation:
+(`world_v10_fourclass_r4_{g,h,i}_s44`, one run per scheme, control = round_4 arm A seed 44;
+`--seeds 42 43 44` / `--with-ablation` for the fuller design); evaluation:
 `experiments/evaluate_balancing.py` (confirmatory g>a, h>a, i>a on generalization AUC,
 Holm m=3; diagnostics: within-country AUC, per-bucket P(farm|NotFarm) spread, per-country
 FPR@0.4 on val for the NotFarm-only countries).

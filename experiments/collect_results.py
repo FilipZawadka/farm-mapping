@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import logging
 import subprocess
 import sys
@@ -64,7 +65,10 @@ def _api(query: str, retries: int = 6) -> dict:
             last = exc
         if attempt < retries - 1:
             _t.sleep(min(60, 5 * 2 ** attempt))
-    raise RuntimeError(f"RunPod API failed after {retries} attempts: {str(last)[:300]}")
+    # The key rides in the curl argv, so exception text embeds it verbatim.
+    # Redact before it reaches a log file.
+    detail = re.sub(r"rpa_[A-Za-z0-9]+", "rpa_<redacted>", str(last))[:300]
+    raise RuntimeError(f"RunPod API failed after {retries} attempts: {detail}")
 
 
 def live_pod() -> tuple[str, int] | None:

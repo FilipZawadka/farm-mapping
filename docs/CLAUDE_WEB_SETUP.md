@@ -60,6 +60,29 @@ The bootstrap script accepts either raw PEM text or base64, installs it at
 confirm it matches what RunPod has. Pods created **before** the key was added
 won't accept it — only new pods pick up account keys at creation.
 
+### Why the API key alone is not enough
+
+The RunPod API key authenticates the *control plane* — create, list, terminate,
+read balance. It gives no way to run a command inside a pod. As currently coded
+the GPU path needs SSH twice:
+
+- **starting work**: `_ssh_run_startup()` SSHes the startup script in and runs it
+  under tmux;
+- **getting results out**: `collect_results.py` streams tar over SSH (the image
+  has no rsync).
+
+So with `RUNPOD_API_KEY` only, you can launch, watch and terminate pods — but
+they will sit idle, and nothing comes back.
+
+**This is a design choice, not a platform limit.** The CPU prep path already
+starts work without SSH by passing the script at creation time
+(`_DOCKER_ARGS = "/bin/bash -lc 'eval $STARTUP_SCRIPT'"` plus the script in the
+`STARTUP_SCRIPT` env var, `runpod_launch.py:32,404`). Porting that to
+`_build_create_kwargs` would make **launching** API-only and would also remove
+the fragile staging step that once stalled 20 minutes with a pod idle. Result
+collection would still need SSH, unless results are left on the network volume
+for a later pod to serve.
+
 ## 3. Network egress — verify before trusting it
 
 The cloud sandbox may restrict outbound traffic. Two different things must work,

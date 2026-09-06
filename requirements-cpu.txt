@@ -4,6 +4,7 @@ geopandas>=0.14.0
 pandas>=2.1.0
 numpy>=1.24.0
 pyarrow>=14.0.0
+scikit-learn>=1.3.0  # experiments/lib.py: roc_auc_score, calibration, per-country AUC
 pydantic>=2.5.0
 pyyaml>=6.0
 shapely>=2.0.0

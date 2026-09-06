@@ -103,6 +103,18 @@ def _run_dir_name(run_name: str) -> str:
     return ts
 
 
+def _nv_log_path(cfg: "PipelineConfig", config_name: str) -> str:
+    """Per-config startup-log path on the network volume.
+
+    Must be unique per config: concurrent pods all tee into this path, and tee
+    truncates on open, so a single shared file loses every log but the last
+    writer's. Nested config names are flattened so the path stays one file.
+    """
+    code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
+    stem = config_name.removesuffix(".yaml").replace("/", "__")
+    return f"{code_dir}/runs/_startup_{stem}.log"
+
+
 def _run_dir_cmd(cfg: "PipelineConfig", config_name: str, step: str) -> str:
     """Shell snippet that creates a timestamped run directory and exports RUN_DIR.
 
@@ -111,7 +123,7 @@ def _run_dir_cmd(cfg: "PipelineConfig", config_name: str, step: str) -> str:
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
     stem = config_name.removesuffix(".yaml")
     leaf = _run_dir_name(getattr(cfg, "run_name", ""))
-    nv_log = f"{code_dir}/runs/_latest_startup.log"
+    nv_log = _nv_log_path(cfg, config_name)
     return (
         f"export RUN_DIR={code_dir}/runs/{stem}/{step}/{leaf}"
         f" && mkdir -p $RUN_DIR"
@@ -187,11 +199,65 @@ def _build_patch_script(cfg: PipelineConfig, config_name: str) -> str:
     return script
 
 
+def _build_deadman_snippet(cfg: PipelineConfig, code_dir: str, config_name: str,
+                           limit_s: int = 1800) -> str:
+    """Background watchdog that terminates the pod if the run makes no progress.
+
+    A pod that launches and then hangs (a stalled `git fetch`, a wedged loader)
+    is indistinguishable from a healthy one via the API: status stays RUNNING and
+    the GPU shows idle only if you look. Seven such pods once billed for 10.5
+    hours each and produced nothing.
+
+    Liveness is the newest mtime across two paths, because neither alone covers
+    the whole run: `/tmp/startup.log` grows during setup but goes quiet for the
+    entire training step (that output is redirected into the run dir), while this
+    run's output dir gets `last_ckpt.pt` rewritten every epoch. Watching only the
+    log would kill healthy training runs; watching only the output dir would miss
+    a hang before training starts.
+
+    The output dir is config-specific, so a sibling pod's activity on the shared
+    volume cannot keep this pod alive.
+    """
+    # Output dirs use the config's BASENAME (config.py sets _config_stem from
+    # Path(yaml_path).stem), not the nested path used for run dirs.
+    stem = os.path.basename(config_name).removesuffix(".yaml")
+    out_dir = f"{code_dir}/data/output/{stem}"
+    # /workspace/farm-venv is included because a venv rebuild writes ~6.6 GB of
+    # CUDA wheels to the network volume while pip stays SILENT for 20+ minutes.
+    # Watching only the log declared such a pod dead at 30 min and killed a
+    # healthy install mid-write (observed at 26 min with 2 pip processes live).
+    venv_dir = "/workspace/farm-venv"
+    return (
+        "( while true; do"
+        "   sleep 300;"
+        f"   FRESH=$(find /tmp/startup.log {out_dir} {venv_dir} -newermt '-{limit_s} seconds'"
+        "      2>/dev/null | head -1);"
+        "   if [ -z \"$FRESH\" ]; then"
+        f"     echo \"DEADMAN: no progress for {limit_s}s -- terminating pod\""
+        "       >> /tmp/startup.log 2>&1;"
+        "     runpodctl remove pod \"$RUNPOD_POD_ID\" || true;"
+        "     exit 0;"
+        "   fi;"
+        " done ) >/dev/null 2>&1 &"
+        # Trailing `true` is required: the caller joins parts with " && ", and a
+        # fragment ending in a bare `&` would produce `& &&` -- a syntax error
+        # that kills the whole startup script on line 1.
+        " true"
+    )
+
+
 def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str] | None = None) -> str:
     """Startup script for a GPU pod: pull code, install deps, then run pipeline."""
     code_dir = getattr(cfg.runpod, "code_dir", "/workspace/farm-mapping")
-    venv = "/workspace/farm-venv"
-    py = f"{venv}/bin/python"
+    # Use the CONTAINER's python, not a venv on the network volume. The
+    # runpod/pytorch image already ships torch + torchvision + CUDA (verified:
+    # torch 2.4.1+cu124, torchvision 0.19.1+cu124, cuda True), so building a
+    # separate venv re-downloaded ~14 GB onto slow shared storage and took ~2
+    # hours per fleet. Installing only the MISSING requirements into the
+    # container takes 59 seconds, on fast container-local disk, and cannot be
+    # corrupted by another pod because nothing is shared.
+    venv = "/workspace/farm-venv"   # legacy path, retained for the lock file only
+    py = "python3"
 
     repo = getattr(cfg.runpod, "github_repo", "")
     branch = getattr(cfg.runpod, "github_branch", "main")
@@ -200,32 +266,62 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
     # .git from a quota-exceeded pod, or no .git at all), fall back to a
     # fresh clone of just `.git/` into /tmp (container disk, no quota), then
     # move it onto the volume. Avoids touching the unrelated data/ tree.
+    # `git fetch` over HTTPS can hang indefinitely (observed: 84 min, GPU idle,
+    # pod billing). Bound it so the re-clone fallback below actually triggers
+    # instead of the pod sitting on a dead network call forever.
+    # Three-tier, and the last tier is the important one: GitHub connectivity from
+    # some datacentres hangs rather than failing (observed repeatedly from
+    # EU-RO-1 -- both fetch and clone stalled with zero bytes transferred). Every
+    # network call is bounded, and if all of them fail the pod proceeds with the
+    # checkout already on the network volume rather than dying or hanging. Code
+    # can then be staged directly onto the volume, taking GitHub off the critical
+    # path entirely.
     git_sync = (
-        f"(cd {code_dir} && git fetch origin"
-        f" && git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo {branch}))"
+        f"(cd {code_dir} && timeout 120 git fetch origin"
+        f" && timeout 120 git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo {branch}))"
         f" || (echo 're-cloning {code_dir} from {repo} via /tmp'"
-        f" && rm -rf {code_dir}/.git /tmp/__repo_tmp"
-        f" && git clone --branch {branch} --single-branch --no-checkout {repo} /tmp/__repo_tmp"
+        f" && rm -rf /tmp/__repo_tmp"
+        f" && timeout 180 git clone --branch {branch} --single-branch --no-checkout {repo} /tmp/__repo_tmp"
+        f" && rm -rf {code_dir}/.git"
         f" && mv /tmp/__repo_tmp/.git {code_dir}/.git"
         f" && rm -rf /tmp/__repo_tmp"
-        f" && cd {code_dir} && git reset --hard origin/{branch})"
+        f" && cd {code_dir} && timeout 120 git reset --hard origin/{branch})"
+        f" || (echo 'WARNING: git sync unavailable; proceeding with the checkout"
+        f" already present on the network volume' && cd {code_dir})"
     )
 
     parts = [
         _SCRIPT_PREAMBLE,
         _LOAD_RUNPOD_ENV,
+        # Arm the watchdog FIRST, so it also covers the git/venv phase -- that is
+        # exactly where the 10.5-hour hangs occurred.
+        _build_deadman_snippet(cfg, code_dir, config_name),
         # Cache torchgeo/torch pretrained weights on the network volume so
         # repeat pods don't re-download (e.g. SoftCon's ~98 MB checkpoint).
         "export TORCH_HOME=/workspace/.torch",
+        # The repo is PRIVATE. Over unauthenticated HTTPS git blocks on a
+        # credential prompt reading stdin that never arrives -- which is what
+        # made fetches hang for 84 minutes and clones stall at 1 MB with zero
+        # network activity (misdiagnosed at the time as datacentre throttling).
+        # These make git FAIL FAST instead, so the staged-code fallback runs in
+        # seconds. Set GIT_TOKEN as a RunPod secret to make git sync work.
+        "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true GCM_INTERACTIVE=never",
         f"git config --global --add safe.directory {code_dir}",
         f"cd {code_dir}",
         git_sync,
         f"cd {code_dir}",
         _run_dir_cmd(cfg, config_name, "pipeline"),
-        f"[ -d {venv} ]"
-        f" && echo 'farm-venv found, skipping install'"
-        f" || (python -m venv {venv}"
-        f" && {venv}/bin/pip install --no-cache-dir -r requirements-train.txt)",
+        # Dependency bootstrap, ~1 minute, container-local.
+        # `blinker` ships as a distutils package in this image and pip refuses to
+        # uninstall it ("Cannot uninstall blinker 1.4"), which fails the whole
+        # requirements install; replacing it first with --ignore-installed clears
+        # that. torch/torchvision are already satisfied by the image, so pip skips
+        # the heavy wheels entirely.
+        "python3 -c 'import torchgeo, mlflow, geopandas, ee' 2>/dev/null"
+        " && echo 'deps already present'"
+        " || (echo 'installing requirements into container python'"
+        " && python3 -m pip install --no-cache-dir --ignore-installed blinker"
+        " && python3 -m pip install --no-cache-dir -r requirements-train.txt)",
         # An existing farm-venv is NOT reinstalled above, so a stale one may
         # predate the SoftCon weights (torchgeo>=0.7.0). If this config uses the
         # SoftCon backbone, verify the enum is importable and upgrade in place
@@ -333,7 +429,18 @@ def _wait_for_ssh(pod_id: str, runpod, timeout: int = 600) -> tuple[str, int]:
     start = time.time()
     deadline = start + timeout
     while time.time() < deadline:
-        pod = runpod.get_pod(pod_id)
+        # get_pod raises KeyError when the API returns a body with no "data"
+        # (transient rate limiting). That must not abort the wait: the pod is
+        # already created and billing, so giving up here strands it.
+        try:
+            pod = runpod.get_pod(pod_id)
+        except Exception as exc:  # noqa: BLE001 - any API hiccup is retryable here
+            log.warning("  get_pod(%s) failed (%s); retrying", pod_id, type(exc).__name__)
+            time.sleep(10)
+            continue
+        if not pod:
+            time.sleep(10)
+            continue
         # Ports appear under runtime.ports as dicts
         port_list = (pod.get("runtime") or {}).get("ports") or []
         for port_info in port_list:
@@ -352,9 +459,39 @@ def _wait_for_ssh(pod_id: str, runpod, timeout: int = 600) -> tuple[str, int]:
     raise TimeoutError(f"SSH not available on pod {pod_id} after {timeout}s")
 
 
-def _ssh_run_startup(host: str, port: int, script: str) -> None:
+def _stage_code(host: str, port: int, code_dir: str = "/workspace/farm-mapping") -> None:
+    """Copy the current working-tree code onto the pod's network volume.
+
+    Only source/config trees -- never data/, patches or outputs, which live on the
+    volume and must not be overwritten.
+    """
+    import subprocess
+    from pathlib import Path as _P
+    repo = _P(__file__).resolve().parents[1]
+    trees = [t for t in ("configs", "training", "experiments", "scripts", "src",
+                         "requirements-train.txt", "requirements-cpu.txt")
+             if (repo / t).exists()]
+    tar = subprocess.Popen(["tar", "czf", "-", *trees], cwd=repo, stdout=subprocess.PIPE)
+    ssh = subprocess.Popen(
+        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=20",
+         "-p", str(port), f"root@{host}",
+         f"mkdir -p {code_dir} && cd {code_dir} && tar xzf - --no-same-owner"],
+        stdin=tar.stdout)
+    tar.stdout.close()
+    rc = ssh.wait(timeout=600)
+    log.info("staged %d code trees to %s (rc=%s)", len(trees), code_dir, rc)
+
+
+def _ssh_run_startup(host: str, port: int, script: str, nv_log: str | None = None) -> None:
     """SSH into the pod and run the startup script inside a detached tmux session."""
     import subprocess, base64
+    # Push the CURRENT working-tree code to the network volume before running
+    # anything. The repo is private, so pods cannot git-pull; they run whatever
+    # was last staged by hand. That bit us when a requirements pin was committed
+    # locally but never staged, and every pod kept installing the broken version.
+    # Staging here makes "what the pod runs" always equal "what is on disk now".
+    _stage_code(host, port)
+
     remote_script = "/tmp/prep_startup.sh"
     # Encode as base64 to avoid all quoting/escaping issues over SSH
     script_b64 = base64.b64encode(script.encode()).decode()
@@ -367,9 +504,9 @@ def _ssh_run_startup(host: str, port: int, script: str) -> None:
     # Two-phase approach:
     # 1. Run the script, tee to /tmp/startup.log (always works)
     # 2. After EVERY line, append to network volume via a tail -f background process
-    nv_log = "/workspace/farm-mapping/runs/_latest_startup.log"
+    nv_log = nv_log or "/workspace/farm-mapping/runs/_latest_startup.log"
     wrapper = (
-        f"stdbuf -oL bash {remote_script} 2>&1"
+        f"mkdir -p $(dirname {nv_log}) ; stdbuf -oL bash {remote_script} 2>&1"
         f" | stdbuf -oL tee /tmp/startup.log {nv_log}"
     )
     run_cmd = f"tmux new-session -d -s prep '{wrapper}'"
@@ -496,7 +633,7 @@ def launch_pod(cfg: PipelineConfig, config_name: str = "us_egg_farms.yaml", step
     startup_script = _build_startup_script(cfg, config_name, steps=steps)
     log.info("Waiting for SSH on pod %s ...", pod_id)
     host, port = _wait_for_ssh(pod_id, runpod)
-    _ssh_run_startup(host, port, startup_script)
+    _ssh_run_startup(host, port, startup_script, nv_log=_nv_log_path(cfg, config_name))
     log.info(
         "Script running in tmux session 'prep'.\n"
         "  Attach : ssh -t root@%s -p %d 'tmux attach -t prep'\n"

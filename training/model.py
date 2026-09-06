@@ -256,11 +256,40 @@ def build_torchgeo_resnet(cfg: ModelConfig) -> FarmDetector:
     return FarmDetector(backbone, cfg.num_classes)
 
 
+def build_densenet(cfg: ModelConfig) -> FarmDetector:
+    """DenseNet-121 from torchvision, ImageNet-initialised.
+
+    NOTE ON PRETRAINING: there are no Sentinel-2-native DenseNet weights (torchgeo
+    ships ResNet/ViT/Swin only), so this backbone necessarily starts from ImageNet.
+    The strongest result in this project's record is that S2-native pretraining
+    beats ImageNet by ~+0.10 macro-F1 -- and the 9-channel ImageNet control showed
+    that gap is the *initialisation*, not the band count. A DenseNet-vs-SoftCon
+    comparison therefore conflates architecture with pretraining and should be read
+    as "architecture under an ImageNet handicap", not as a clean architecture test.
+    """
+    import torchvision.models as tvm
+
+    weights = getattr(tvm, "DenseNet121_Weights", None)
+    backbone = tvm.densenet121(weights=weights.IMAGENET1K_V1 if weights else None)
+
+    # densenet's stem is features.conv0 (Conv2d, in_channels=3); the generic
+    # recursive adapter finds it and mean-initialises the extra channels. No
+    # band-name mapping is possible here -- ImageNet weights have no band order.
+    if cfg.input_channels != 3:
+        _adapt_first_conv(backbone, cfg.input_channels)
+        log.info("Adapted DenseNet first conv: 3 -> %d input channels (positional copy)",
+                 cfg.input_channels)
+
+    backbone.classifier = nn.Linear(backbone.classifier.in_features, cfg.num_classes)
+    return FarmDetector(backbone, cfg.num_classes)
+
+
 MODEL_BUILDERS: dict[str, callable] = {
     "resnet50": build_resnet,
     "resnet50_satlas": build_torchgeo_resnet,
     "resnet50_ssl4eo": build_torchgeo_resnet,
     "resnet50_softcon": build_torchgeo_resnet,
+    "densenet121": build_densenet,
     "vit_small": build_vit,
     "vit_base": build_vit,
     "prithvi_eo": build_generic,

@@ -9,6 +9,8 @@
 **/credentials*.json
 **/service-account*.json
 
+temp/
+
 data/
 
 output/
@@ -51,3 +53,4 @@ build/
 
 TODO.md
 todo_prompts.md .env.bak*
+experiments/gpu_results/

@@ -1,0 +1,288 @@
+"""Launch experiment configs on RunPod with a concurrency cap and a budget guard.
+
+Pods auto-terminate when their pipeline finishes, so this keeps at most
+--max-concurrent alive and tops the fleet up as slots free.
+
+Usage:
+  python3 experiments/launch_fleet.py --list
+  python3 experiments/launch_fleet.py --max-concurrent 5 --budget 30
+  python3 experiments/launch_fleet.py --status
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+STATE = Path(__file__).resolve().parent / "results" / "fleet_state.json"
+
+# Ordered by value: seed variance first (it calibrates every other delta),
+# then the levers most likely to change the production recipe.
+ORDER = [
+    "world_v10_fourclass_r4_a_s42",
+    "world_v10_fourclass_r4_a_s43",
+    "world_v10_fourclass_r4_a_s44",
+    "world_v10_fourclass_r4_b_s42",
+    "world_v10_fourclass_r4_b_s43",
+    "world_v10_fourclass_r4_b_s44",
+    "world_v10_fourclass_r4_c_s42",
+    "world_v10_fourclass_r4_c_s43",
+    "world_v10_fourclass_r4_c_s44",
+    "world_v10_fourclass_r4_d_s42",
+    "world_v10_fourclass_r4_d_s43",
+    "world_v10_fourclass_r4_d_s44",
+    # Arm F before arm E, deliberately. F answers a mechanism question that changes
+    # the production recommendation (is freeze0's win the freezing or the coupled 10x
+    # LR cut?). E is a three-way confound -- architecture x ImageNet-init x 3.4x fewer
+    # params -- so a loss for it is close to uninterpretable. If the budget reserve
+    # ever trips, the runs that get stranded should be the least decision-relevant.
+    "world_v10_fourclass_r4_f_s42",
+    "world_v10_fourclass_r4_f_s43",
+    "world_v10_fourclass_r4_f_s44",
+    "world_v10_fourclass_r4_e_s42",
+    "world_v10_fourclass_r4_e_s43",
+    "world_v10_fourclass_r4_e_s44",
+]
+
+log = logging.getLogger("fleet")
+
+
+def _api(query: str, retries: int = 5) -> dict:
+    """Query the RunPod GraphQL API, tolerating transient failures.
+
+    The API intermittently returns a body with no "data" key (rate limiting or a
+    server hiccup). Left unhandled that raises KeyError and kills the fleet
+    mid-run -- which already happened once, stranding a created pod that was
+    billing with no work on it.
+    """
+    from training.env_loader import load_dotenv
+    load_dotenv()
+    import os
+    key = os.environ["RUNPOD_API_KEY"]
+    last = None
+    for attempt in range(retries):
+        try:
+            out = subprocess.run(
+                ["curl", "-s", "--max-time", "45",
+                 "-H", f"Authorization: Bearer {key}", "-H", "Content-Type: application/json",
+                 "-X", "POST", "https://api.runpod.io/graphql", "-d", json.dumps({"query": query})],
+                capture_output=True, text=True, check=True,
+            )
+            body = json.loads(out.stdout)
+            if "data" in body and body["data"] is not None:
+                return body["data"]
+            last = body.get("errors", body)
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+            last = exc
+        if attempt < retries - 1:
+            time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"RunPod API failed after {retries} attempts: {str(last)[:300]}")
+
+
+def account() -> dict:
+    d = _api("query { myself { clientBalance currentSpendPerHr "
+             "pods { id name desiredStatus costPerHr runtime { uptimeInSeconds } } } }")
+    return d["myself"]
+
+
+def load_state() -> dict:
+    if STATE.exists():
+        return json.loads(STATE.read_text())
+    return {"launched": {}, "spend_estimate": 0.0}
+
+
+def save_state(s: dict) -> None:
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(s, indent=2))
+
+
+def launch_one(name: str, steps: tuple[str, ...] = ("train", "inference")) -> str | None:
+    # Configs live under either configs/experiments/ (ablation campaign) or
+    # configs/rachel_clusters/ (release + round arms); resolve whichever exists.
+    for d in ("experiments", "rachel_clusters"):
+        cfg = f"configs/{d}/{name}.yaml"
+        if (REPO / cfg).exists():
+            break
+    else:
+        log.error("missing config %s.yaml (looked in configs/experiments and configs/rachel_clusters)", name)
+        return None
+    log.info("launching %s ...", name)
+    p = subprocess.run(
+        [sys.executable, "-m", "training.runpod_launch", "--config", cfg,
+         "--steps", *steps],
+        cwd=REPO, capture_output=True, text=True, timeout=1800,
+    )
+    for line in (p.stdout + p.stderr).splitlines():
+        if "Pod created" in line or "Pod launched" in line:
+            log.info("  %s", line.strip())
+    out = p.stdout + p.stderr
+    for line in out.splitlines():
+        if "Pod launched:" in line:
+            return line.split("Pod launched:")[1].strip()
+
+    # Launch failed. A pod is often already CREATED and BILLING at this point --
+    # runpod_launch gives up after ~600s waiting for SSH, but never terminates what
+    # it made. That leaves a pod at $0.74/hr doing nothing AND occupying a fleet
+    # slot (the concurrency cap counts it), which is how a run silently goes missing.
+    stranded = None
+    for line in out.splitlines():
+        if "Pod created:" in line and "id=" in line:
+            stranded = line.split("id=")[1].split()[0].strip()
+    if stranded:
+        log.error("  launch failed for %s -- terminating stranded pod %s", name, stranded)
+        try:
+            _terminate(stranded)
+        except Exception as exc:
+            log.error("  could not terminate %s: %s -- CHECK MANUALLY", stranded, str(exc)[:200])
+    log.error("  launch failed for %s:\n%s", name, out[-1200:])
+    return None
+
+
+def _terminate(pod_id: str) -> None:
+    from training.env_loader import load_dotenv
+    load_dotenv()
+    import os, runpod
+    runpod.api_key = os.environ["RUNPOD_API_KEY"]
+    runpod.terminate_pod(pod_id)
+
+
+def reap_finished(me: dict) -> int:
+    """Terminate pods whose run is already collected.
+
+    Pods cannot self-terminate: training/auto_terminate.py needs RUNPOD_API_KEY,
+    and _RUNPOD_SECRETS_ENV injects only the GEE/Maps secrets, so it always takes
+    its "skipping auto-terminate" branch. Without this reaper a finished pod idles
+    until the 30-minute no-progress watchdog fires -- roughly $0.37 and 30 minutes
+    of slot latency per run, which across 18 runs is ~$7 and hours of wall clock.
+    Reaping here keeps the API key on the laptop instead of shipping it to pods.
+
+    A run counts as finished once the collector has pulled scored_candidates.parquet
+    (the pipeline's last substantive artifact); the 120 s grace lets the trailing
+    archive step finish.
+    """
+    dest = REPO / "experiments" / "gpu_results"
+    killed = 0
+    for pod in me["pods"]:
+        name = pod["name"].split("/")[-1]
+        f = dest / name / "scored_candidates.parquet"
+        try:
+            if f.exists() and (time.time() - f.stat().st_mtime) > 120:
+                log.info("reaping finished pod %s (%s)", pod["id"], name)
+                _terminate(pod["id"])
+                killed += 1
+        except Exception as exc:                     # never let reaping kill the fleet
+            log.warning("  reap failed for %s: %s", name, str(exc)[:200])
+    return killed
+
+
+def cmd_status() -> None:
+    me = account()
+    pods = me["pods"]
+    print(f"balance ${me['clientBalance']:.2f}   spend ${me['currentSpendPerHr']:.3f}/hr   "
+          f"running pods {len(pods)}")
+    for p in pods:
+        up = (p.get("runtime") or {}).get("uptimeInSeconds") or 0
+        print(f"  {p['id']:<18} {p['name']:<46} {p['desiredStatus']:<8} "
+              f"${p.get('costPerHr', 0):.3f}/hr  up {up//60}m")
+    st = load_state()
+    done = [k for k, v in st["launched"].items() if v.get("pod_id")]
+    print(f"\nlaunched so far: {len(done)}/{len(ORDER)}")
+    remaining = [n for n in ORDER if n not in st["launched"]]
+    if remaining:
+        print(f"remaining: {', '.join(remaining)}")
+
+
+def cmd_run(max_concurrent: int, budget: float, poll: int,
+            steps: tuple[str, ...] = ("train", "inference")) -> None:
+    st = load_state()
+    queue = [n for n in ORDER if n not in st["launched"]]
+    log.info("queue: %d configs, max_concurrent=%d, budget=$%.2f", len(queue), max_concurrent, budget)
+
+    while queue:
+        try:
+            me = account()
+        except Exception as exc:
+            # A transient DNS/network blip must not end a multi-hour fleet run.
+            log.warning("API unreachable (%s); retrying in %ds", str(exc)[:120], poll)
+            time.sleep(poll)
+            continue
+        if reap_finished(me):
+            me = account()                            # slots just freed; re-read
+        balance, running = me["clientBalance"], len(me["pods"])
+        hourly = me["currentSpendPerHr"]
+
+        if balance < budget:
+            log.warning("balance $%.2f below reserve $%.2f -- stopping launches", balance, budget)
+            break
+
+        slots = max_concurrent - running
+        if slots <= 0:
+            log.info("%d/%d pods busy ($%.3f/hr, balance $%.2f) -- %d queued; sleeping %ds",
+                     running, max_concurrent, hourly, balance, len(queue), poll)
+            time.sleep(poll)
+            continue
+
+        for _ in range(min(slots, len(queue))):
+            name = queue.pop(0)
+            pod_id = launch_one(name, steps)
+            if pod_id:
+                st["launched"][name] = {"pod_id": pod_id, "ts": time.time()}
+                save_state(st)
+                time.sleep(20)  # stagger so concurrent git syncs don't collide
+            else:
+                # Retry rather than record a null pod_id: a null entry counts as
+                # "launched" forever, so the arm quietly finishes a seed short.
+                fails = st.setdefault("failures", {})
+                fails[name] = fails.get(name, 0) + 1
+                save_state(st)
+                if fails[name] < 3:
+                    log.warning("  re-queueing %s (attempt %d/3)", name, fails[name])
+                    queue.append(name)
+                else:
+                    log.error("  GIVING UP on %s after 3 failed launches", name)
+                    st["launched"][name] = {"pod_id": None, "ts": time.time(),
+                                            "gave_up": True}
+                    save_state(st)
+
+    log.info("all configs launched; %d pods still running", len(account()["pods"]))
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--max-concurrent", type=int, default=5)
+    ap.add_argument("--budget", type=float, default=15.0,
+                    help="stop launching when balance falls below this reserve")
+    ap.add_argument("--poll", type=int, default=180)
+    ap.add_argument("--status", action="store_true")
+    ap.add_argument("--order-file", help="file with one run name per line; replaces ORDER")
+    ap.add_argument("--state", help="alternate state file (keeps campaigns separate)")
+    ap.add_argument("--steps", nargs="*", default=["train", "inference"],
+                    help="pipeline steps to run (scoring passes use just: inference)")
+    ap.add_argument("--list", action="store_true")
+    args = ap.parse_args()
+
+    global ORDER, STATE
+    if args.order_file:
+        ORDER = [l.strip() for l in Path(args.order_file).read_text().splitlines() if l.strip()]
+    if args.state:
+        STATE = Path(args.state)
+
+    if args.list:
+        for n in ORDER:
+            print(n)
+        return
+    if args.status:
+        cmd_status()
+        return
+    cmd_run(args.max_concurrent, args.budget, args.poll, tuple(args.steps))
+
+
+if __name__ == "__main__":
+    main()

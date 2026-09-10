@@ -11,7 +11,9 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +24,13 @@ from .config import load_config, resolve_paths, build_region_string
 from .osm_negatives import US_STATE_BOUNDS
 
 log = logging.getLogger(__name__)
+
+# Written into candidates_dir when convert() has finished writing EVERY country
+# CSV. A training pod that starts while another pod's candidates step is still
+# running would otherwise read a partial directory and train on a subset of
+# countries without any error; scripts/run_round5_campaign.sh waits for this
+# file before launching the balanced arms.
+COMPLETE_MARKER = "_COMPLETE.json"
 
 # Map ADM0 codes to our country keys
 _ADM0_TO_KEY = {
@@ -98,6 +107,10 @@ def convert(
     parquet_path = Path(parquet_path)
     candidates_dir = Path(candidates_dir)
     candidates_dir.mkdir(parents=True, exist_ok=True)
+
+    # A stale marker from an earlier conversion must not read as "complete"
+    # while this run is still writing.
+    (candidates_dir / COMPLETE_MARKER).unlink(missing_ok=True)
 
     log.info("Loading %s ...", parquet_path)
     df = pd.read_parquet(parquet_path)
@@ -347,7 +360,17 @@ def convert(
             len(grp), path, n_pos, n_neg, n_unk, n_eval, n_explicit,
         )
 
-    log.info("Done. Total: %d candidates", len(out_df))
+    marker = candidates_dir / COMPLETE_MARKER
+    marker.write_text(json.dumps({
+        "rows": int(len(out_df)),
+        "countries": int(out_df["country_key"].nunique()),
+        "labelled": int((out_df["label"] >= 0).sum()),
+        "parquet": str(parquet_path),
+        "label_mode": label_mode,
+        "keep_unscorable_labels": bool(keep_unscorable_labels),
+        "written_at": datetime.now(timezone.utc).isoformat(),
+    }, indent=2))
+    log.info("Done. Total: %d candidates (marker %s)", len(out_df), marker)
     return out_df
 
 

@@ -53,12 +53,14 @@ import evaluate_r4 as r4  # noqa: E402
 from training.balancing import DEFAULT_BUCKETS, UNKNOWN_ISO3, assign_buckets  # noqa: E402
 
 ARMS = {
-    "a": "baseline (round_4 arm A)",
+    "a": "baseline: same data + recipe, no sampler",
     "g": "grouped countries, uniform, class-cond.",
     "h": "3 buckets us/europe/rest, class-cond.",
     "i": "per-country cap 20%, class-cond.",
     "j": "ABLATION grouped, no class-cond.",
 }
+DEFAULT_PREFIX = "world_v10_fourclass_r5"
+DEFAULT_V10 = lib.REPO / "data/rachel_geometry_candidates/all_countries/all_clusters_v11.parquet"
 BALANCED = ("g", "h", "i", "j")
 CONFIRMATORY = [("g", "a"), ("h", "a"), ("i", "a")]
 EXPLORATORY = [("j", "g"), ("j", "a")]
@@ -199,7 +201,7 @@ def sampling_reports(gpu: Path) -> dict:
     print(f"\n{'run':<34}{'scheme':<17}{'groups':>7}{'NMI nat->ach':>15}{'ESS':>7}{'w_max':>7}{'clipped':>9}")
     for a in BALANCED:
         for s in r4.SEEDS:
-            run = f"world_v10_fourclass_r4_{a}_s{s}"
+            run = f"{r4.RUN_PREFIX}_{a}_s{s}"
             f = gpu / run / "sampling_report.json"
             if not f.exists():
                 if (gpu / run / "scored_candidates.parquet").exists():
@@ -221,24 +223,34 @@ def sampling_reports(gpu: Path) -> dict:
 # ---------------------------------------------------------------- main
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--v10", help="master parquet (default: evaluate_r4.V10)")
+    ap.add_argument("--prefix", default=DEFAULT_PREFIX,
+                    help=f"run-name prefix of the campaign (default {DEFAULT_PREFIX}; "
+                         "use world_v10_fourclass_r4 for the round_4 arms)")
+    ap.add_argument("--v10", default=str(DEFAULT_V10),
+                    help="master parquet with cnn_split_assigned for the SAME round as the runs "
+                         f"(default {DEFAULT_V10.name}; round_4 arms need all_clusters_v10.parquet)")
     ap.add_argument("--gpu-dir", help="collected runs dir (default: experiments/gpu_results)")
     ap.add_argument("--boot", type=int, default=r4.BOOT, help="bootstrap resamples per contrast")
     ap.add_argument("--out", default="balancing_evaluation", help="results/<out>.json")
     args = ap.parse_args()
-    if args.v10:
-        r4.V10 = Path(args.v10)
+    r4.RUN_PREFIX = args.prefix
+    r4.V10 = Path(args.v10)
     if args.gpu_dir:
         r4.GPU = Path(args.gpu_dir)
     r4.BOOT = args.boot
+    if not r4.V10.exists():
+        sys.exit(f"master parquet not found: {r4.V10} (pass --v10; the slices must come from the "
+                 "same data round the runs were trained on)")
 
-    lib.header("Region-balancing campaign evaluation (docs/COUNTRY_BALANCING_PLAN.md)")
+    lib.header(f"Region-balancing campaign evaluation: {r4.RUN_PREFIX}_* vs arm A "
+               f"(docs/COUNTRY_BALANCING_PLAN.md)")
+    print(f"splits from {r4.V10}")
     SL = r4.slices(("generalization", "test", "eval", "val"))
     print("slices:", {k: len(v) for k, v in SL.items()})
 
-    names = [f"world_v10_fourclass_r4_{a}_s{s}" for a in ARMS for s in r4.SEEDS]
+    names = [f"{r4.RUN_PREFIX}_{a}_s{s}" for a in ARMS for s in r4.SEEDS]
     scores = {n: v for n in names if (v := r4.load_scores(n)) is not None}
-    have = [a for a in ARMS if any(f"world_v10_fourclass_r4_{a}_s{s}" in scores for s in r4.SEEDS)]
+    have = [a for a in ARMS if any(f"{r4.RUN_PREFIX}_{a}_s{s}" in scores for s in r4.SEEDS)]
     print(f"runs loaded: {len(scores)} | arms with data: {have or 'none yet'}")
     if not have:
         print("\nNo campaign runs collected yet -- rerun when training finishes.")

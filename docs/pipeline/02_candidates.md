@@ -106,6 +106,13 @@ the whole world.
 ## Output
 
 Per-country CSVs land under `data/rachel_geometry_candidates/{cfg.data.candidates_dir}/`.
+When `convert()` has written **every** country CSV it also writes `_COMPLETE.json`
+(row / country / label counts, source parquet, timestamp) into that directory, and it
+deletes any stale marker before it starts. The directory is shared between pods, so a
+training run launched while another pod's candidates step is still writing would read a
+partial set of countries without any error — wait for the marker (this is what the
+`wait` stage of `scripts/run_round5_campaign.sh` does) before launching runs that skip
+the candidates step.
 Example (three-class v4):
 
 ```

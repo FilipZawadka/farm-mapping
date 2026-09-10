@@ -907,3 +907,30 @@ marginals alone does *not* reduce label~region dependence (NMI 0.46 → 0.46) an
 the class prior to 58% NotFarm; with class conditioning the dependence falls (grouped
 0.46 → 0.22, buckets 0.24 → 0.00, capped 0.48 → 0.26) at an unchanged prior. Full plan,
 literature and pre-registration: `docs/COUNTRY_BALANCING_PLAN.md`. Results: pending.
+
+## 2026-09-10 — Round 5 data (Rachel's split-level cap); balancing campaign re-based on it
+
+Rachel delivered tidied `for_analysis` files (~30 label corrections, consistent
+eval label groups, all BGD → generalization, PER/IDN/MOZ added as fully held-out
+generalization countries, eval clusters without patches restored) and `round_5`
+files with a split-level cap: HICs ≤ 1.3× LMICs in Poultry and NotFarm, per-country
+ceilings NotFarm 789 (DEU/RUS/USA) and Poultry 1,205 (USA 6,377 → 1,205), Pigs/Cattle
+uncapped; 20,435 of 29,175 eligible clusters kept, excluded rows → `qual_eval`; test
+set re-drawn (not comparable with round_4).
+
+Consequences: the round_4 arm A is no longer a valid control (and round_4 models
+trained on the new generalization countries' rows); the campaign becomes four
+round_5 runs at seed 44 — `world_v10_fourclass_r5_{a,g,h,i}_s44`, with `a` = the
+round_5 baseline (no sampler). The 20% sampler cap (arm I) is unlikely to bind after
+her cap, so arm I isolates the class-conditional term; the within-country confound
+(RUS/UKR/BLR/… still 100% NotFarm) survives her cap, which is what G/H address.
+
+Tooling: `configs/rachel_clusters/world_v10_fourclass_r5.yaml` (anchor, data
+`all_clusters_v11.parquet` / `candidates_world_v10_r5`), `gen_balancing_configs.py
+--round r5` (default), `evaluate_balancing.py --prefix/--v10`, `gen_score_configs.py
+--prefix`, `rachel_to_candidates.convert()` writes `_COMPLETE.json` so no training
+pod reads a half-written candidates dir, and `scripts/run_round5_campaign.sh`
+(sync → merge → upload → audit → baseline+candidates → wait → arms → collect →
+evaluate). Details: `docs/COUNTRY_BALANCING_PLAN.md` §8. Results: pending — the
+runs have to be launched from the laptop (the Claude web sandbox cannot reach
+RunPod or Drive).

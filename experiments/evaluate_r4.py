@@ -30,6 +30,9 @@ import lib  # noqa: E402
 
 V10 = lib.REPO / "data/rachel_geometry_candidates/all_countries/all_clusters_v10.parquet"
 GPU = Path(__file__).resolve().parent / "gpu_results"
+# Run-name prefix of the campaign being evaluated; evaluate_balancing.py
+# overrides it (round_5 arms are world_v10_fourclass_r5_*).
+RUN_PREFIX = "world_v10_fourclass_r4"
 ARMS = {"a": "baseline (v9/v6 recipe)", "b": "freeze0 only", "c": "6 bands only",
         "d": "freeze0 + 6 bands", "e": "DenseNet-121 (+freeze0+6bands)", "f": "freeze5 + full-LR unfreeze"}
 SEEDS = (42, 43, 44)
@@ -104,7 +107,7 @@ def holm(pvals: dict) -> dict:
 
 def arm_auc(scores: dict, sl: pd.DataFrame, arm: str) -> dict:
     """Per-seed AUCs for one arm on one slice, over rows common to all its seeds."""
-    runs = {s: scores.get(f"world_v10_fourclass_r4_{arm}_s{s}") for s in SEEDS}
+    runs = {s: scores.get(f"{RUN_PREFIX}_{arm}_s{s}") for s in SEEDS}
     runs = {s: v for s, v in runs.items() if v is not None}
     if not runs:
         return {}
@@ -254,13 +257,13 @@ def main() -> None:
     SL = slices()
     print("slices:", {k: len(v) for k, v in SL.items()})
 
-    names = [f"world_v10_fourclass_r4_{a}_s{s}" for a in ARMS for s in SEEDS] + ["v6","v7","v8","v9"]
+    names = [f"{RUN_PREFIX}_{a}_s{s}" for a in ARMS for s in SEEDS] + ["v6","v7","v8","v9"]
     scores = {}
     for n in names:
         v = load_scores(n)
         if v is not None:
             scores[n] = v
-    have = [a for a in ARMS if any(f"world_v10_fourclass_r4_{a}_s{s}" in scores for s in SEEDS)]
+    have = [a for a in ARMS if any(f"{RUN_PREFIX}_{a}_s{s}" in scores for s in SEEDS)]
     print(f"runs loaded: {len(scores)} | arms with data: {have or 'none yet'}")
     if not have:
         print("\nNo round_4 runs collected yet -- rerun when training finishes.")

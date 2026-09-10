@@ -24,12 +24,14 @@
    prior, the global prior is pinned by raking (so no `v9_bal`-style prior shift), and a
    single-label country forfeits the part of its share it cannot support. All three requested
    experiments carry this term; an optional fourth arm (J) isolates it.
-4. **Campaign (as trimmed on 2026-09-06): three runs**, one per scheme — G (grouped countries),
-   H (us / europe / rest), I (20% cap) — at seed 44 on the round_4 data and the arm-A recipe,
-   each paired with the existing `world_v10_fourclass_r4_a_s44` as the control. Configs are
-   generated and self-tested; ~$5–10 and ~3 h of wall clock at 3 concurrent pods. Single runs
-   support artifact-level claims only; the pre-registered rule in section 4 says how they are
-   read. **Section 6 lists what has to be in place to launch.**
+4. **Campaign (round_5, 2026-09-10): four runs at seed 44** — the round_5 baseline A (Rachel's
+   split-level cap, no sampler) plus G (grouped countries), H (us / europe / rest) and I (20% cap)
+   on the same round_5 data. Round_5 replaced the round_4 data (label fixes, new eval sets, a
+   split-level cap), so the round_4 arm A is no longer a valid control — section 8 has the
+   details, the run list and the one-command runbook (`scripts/run_round5_campaign.sh`).
+   ~$8–12 and ~4 h of wall clock. Single runs support artifact-level claims only; the
+   pre-registered rule in section 4 says how they are read. Section 6 lists what has to be in
+   place to launch (unchanged: the laptop has everything, the Claude web sandbox has nothing).
 
 ---
 
@@ -201,7 +203,7 @@ delta is `training.region_balancing`. The control is the existing round_4 run
 `world_v10_fourclass_r4_a_s44` (same recipe, same seed, so the same weight init and augmentation
 stream; already collected). Arm A's other two seeds (42, 43) are used only to measure σ_seed.
 Configs: `world_v10_fourclass_r4_{g,h,i}_s44.yaml`; the fleet order is
-`experiments/balancing_order.txt`.
+`experiments/balancing_order_r4.txt`.
 
 | Arm | Config block | What it does to an epoch | Hypothesis |
 |---|---|---|---|
@@ -295,6 +297,9 @@ idle watchdog per pod unless the collector's reaper is running).
 
 ## 5. How to run it
 
+*This is the round_4 flow (three arms against the existing round_4 arm A). For the live
+round_5 campaign use `bash scripts/run_round5_campaign.sh` — section 8.4.*
+
 ```bash
 git checkout develop && git pull                     # the pod runs the code STAGED from this tree
 
@@ -305,13 +310,13 @@ python scripts/audit_country_balance.py --config configs/rachel_clusters/world_v
 python3 experiments/gen_balancing_configs.py --selftest
 
 # 2. launch the three runs; separate state file so the round_4 fleet state is untouched
-python3 experiments/launch_fleet.py --order-file experiments/balancing_order.txt \
+python3 experiments/launch_fleet.py --order-file experiments/balancing_order_r4.txt \
     --state experiments/results/balancing_fleet_state.json --max-concurrent 3 --budget 10
 #    (or one at a time: python -m training.runpod_launch \
 #        --config configs/rachel_clusters/world_v10_fourclass_r4_g_s44.yaml --steps train inference)
 
 # 3. collect while the pods are alive (also reaps finished pods; pulls sampling_report.json)
-python3 experiments/collect_results.py --watch --names-file experiments/balancing_order.txt
+python3 experiments/collect_results.py --watch --names-file experiments/balancing_order_r4.txt
 
 # 4. (optional) full-world scoring passes, for complete evaluation slices + publishing
 python3 experiments/gen_score_configs.py             # picks up world_v10_fourclass_r4_{g,h,i}_s44
@@ -389,6 +394,113 @@ the launch can be driven from a Claude session:
   per-country FPR table from `evaluate_balancing.py` is the shortlist for that label round.
 - **Spatially blocked splits and per-country thresholds** remain open items from
   `paper/experiments_justification_plan.md` (E0.2, E2.1) and compose with any sampler.
+
+---
+
+## 8. Round 5 — Rachel's split-level cap (2026-09-10)
+
+### 8.1 What changed in the data
+
+From Rachel's notes (relayed 2026-09-10). Two deliveries: the tidied `for_analysis` files, and
+the `round_5` files built from them.
+
+| Change | Consequence for this campaign |
+|---|---|
+| ~30 bad labels (from the round_2 false-positive review) corrected in the `for_analysis` files | every round_5 model starts without known bad labels; round_4 models did not |
+| Label-group definitions made consistent when building evaluation sets | `eval` composition changes "a bit" — round_4 `eval` numbers are not a reference for round_5 |
+| All BGD clusters are `split=generalization` | the generalization slice grows; BGD rows that leaked into other splits are gone |
+| Three new fully held-out generalization countries: **PER, IDN, MOZ** | do not use them for selection or thresholds. In round_4 their labelled rows sat in train/val (qual_eval was absorbed), so **round_4 models are contaminated on them** — another reason the round_4 arms cannot be compared on round_5 slices |
+| Eval clusters that had dropped out for lack of a valid Sentinel patch are restored | the evaluator's slices come from the parquet; rows without a patch are still dropped by `build_splits` — compare its "Explicit splits" log counts with the parquet's split counts to see how many |
+| **Split-level cap**: HICs may contribute at most 1.3× the LMIC total in the Poultry and NotFarm classes; per-country ceilings for HICs — NotFarm 789 (DEU 879→789, RUS 2,960→789, USA 2,096→789), Poultry 1,205 (USA 6,377→1,205); Pigs/Cattle uncapped; 20,435 of 29,175 eligible clusters kept; excluded rows carry `split=qual_eval` | see 8.2 |
+| Same train/val/test proportions for the focal countries, 80:20 train/val elsewhere | **the test set differs from round_4** — never compare round_5 `test` to round_4 `test` |
+| `generalization` and `eval` membership preserved (apart from the fixes above) | the primary slice is stable within round_5 |
+
+### 8.2 What Rachel's cap does and does not do to the confound
+
+Her cap is a *class-conditional, split-level* cap: a per-class budget (HIC ≤ 1.3 × LMIC) with
+per-country ceilings inside it. It removes mass exactly where section 1 said the dominant
+cells were — USA poultry and RUS/DEU/USA NotFarm — and it does so by *dropping rows*, not by
+re-weighting, so no row is repeated. Three things follow:
+
+1. **The round_4 baseline is dead as a control.** Different labels, different eval sets, a
+   different test set and 8,740 fewer training rows. The control for the round_5 arms is a
+   round_5 baseline with the same recipe and no sampler: `world_v10_fourclass_r5_a_s44`.
+2. **The 20% sampler cap (arm I) almost certainly does not bind any more.** After her cap USA
+   is roughly 15% of the train split (789 NotFarm + 1,205 Poultry + uncapped Pigs/Cattle) and
+   RUS about 4%. Arm I therefore reduces to *natural shares + class conditioning* — which is
+   useful: on round_5 it isolates the class-conditional term on top of Rachel's cap. The run's
+   `sampling_report.json` states whether the cap bound (`nominal_share` vs `natural_share`).
+3. **The within-country confound survives her cap.** The cap changes how much of the epoch
+   each country contributes, not what its rows say: RUS, UKR, BLR, MYS, IND, TUR, GBR, KAZ are
+   still 100% NotFarm, USA is still ~75% farm. That is the part the class-conditional sampler
+   addresses (section 1.3), so arms G and H still have a job. The audit stage of the runbook
+   prints the round_5 numbers (`experiments/results/r5_train_country_audit.txt`).
+
+Also worth knowing: the 8,740 excluded rows now carry `split=qual_eval`. For round_5 models
+that is a large never-trained-on slice, but it is the *capped-out remainder of the training
+countries* (USA poultry, HIC NotFarm), not a world review sample — report it, do not treat it
+as deployment-like, and do not compare it with any earlier `qual_eval` figure. `evaluate_r4.py`
+and `evaluate_balancing.py` never read it.
+
+### 8.3 Run list
+
+| Run | Sampler | Role |
+|---|---|---|
+| `world_v10_fourclass_r5_a_s44` | none | control; also the "does Rachel's cap help?" model (vs round_4 arm A on the *shared* generalization countries only: BGD, NGA, ALB, COD, IND, MAR) |
+| `world_v10_fourclass_r5_g_s44` | grouped countries, uniform, class-cond. | arm G on round_5 |
+| `world_v10_fourclass_r5_h_s44` | us / europe / rest, class-cond. | arm H on round_5 |
+| `world_v10_fourclass_r5_i_s44` | cap 20% (likely non-binding) + class-cond. | class-conditional term alone |
+
+All four: seed 44, recipe of round_4 arm A, `candidates_world_v10_r5` built from
+`all_clusters_v11.parquet`, `runpod.github_branch: develop`. Configs come from
+`experiments/gen_balancing_configs.py` (round_5 is the default; `--round r4` rebuilds the
+round_4 arms), fleet order `experiments/balancing_order_r5.txt`. Evaluation:
+`experiments/evaluate_balancing.py --prefix world_v10_fourclass_r5 --v10 <all_clusters_v11.parquet>`
+(both are the defaults). The pre-registered contrasts of section 4 apply unchanged (g>a, h>a,
+i>a on generalization AUC; the seed term falls back to the v9 five-seed σ because no round_5
+arm has more than one seed — the evaluator says so in its output).
+
+### 8.4 Getting the data onto the volume and running
+
+The pods do not have Rachel's files: her Drive folder is synced to the network volume with
+`scripts/sync_rachel.sh` (Drive → local staging → rsync over SSH), the per-country files are
+merged into one parquet with `scripts/merge_clusters_v7.py` (it asserts cluster_id stability
+and zero geometry drift against v10 before joining, and carries `viz_status` / `viz_label` /
+`template_score_if` over), and the candidates dir is built by the candidates step of the first
+run. `scripts/run_round5_campaign.sh` strings this together from the laptop:
+
+```
+sync → merge → upload → audit → baseline (with candidates step) → wait → arms → collect → evaluate
+```
+
+Every stage is idempotent and can be run alone (`bash scripts/run_round5_campaign.sh audit`);
+`--dry-run` prints the commands. Two details matter:
+
+- **`wait` exists because the candidates dir is shared.** `rachel_to_candidates.convert()` writes
+  ~165 country CSVs; a training pod that starts while another pod's candidates step is still
+  writing reads a partial directory and trains on a subset of countries *without any error*.
+  `convert()` now writes `_COMPLETE.json` when every CSV is in place, and the runbook launches
+  the balanced arms only after that marker exists on the volume.
+- **The pods run the code staged from the launching working tree**, so the laptop must be on
+  `develop` with `training/balancing.py` and the round_5 configs present.
+
+Nothing in this section can run from the Claude Code web sandbox (section 6): it cannot reach
+`api.runpod.io`, has no RunPod API key or SSH key, and has no Google Drive credentials for the
+sync. The sandbox was used to prepare and test the tooling; the laptop launches.
+
+### 8.5 Points to raise with Rachel
+
+- **Russia counted as a HIC.** The World Bank lists the Russian Federation as upper-middle
+  income, i.e. LMIC under the usual split; her cap treats it as HIC (ceiling 789). Deliberate?
+  It is a reasonable choice for the *purpose* (it is the largest all-NotFarm source), but the
+  rule should say so.
+- **The cap leaves the region→label shortcut inside single-label countries untouched** (8.2,
+  point 3); the sampler arms are the complement, and the class-conditional term is the part
+  that does not double-count her cap.
+- **`qual_eval` changed meaning** (capped-out training-country rows, no longer a world hold-out).
+- **New generalization countries need patches**: PER/IDN/MOZ rows without an extracted patch
+  are silently dropped from the evaluation slices; the `Explicit splits` log line of the
+  baseline run gives the effective counts.
 
 ---
 

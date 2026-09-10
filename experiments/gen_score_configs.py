@@ -41,7 +41,12 @@ def make(run: str, force: bool = False) -> Path | None:
     # matching how every historical *_scoreall release was built.
     data = cfg.setdefault("data", {})
     data["keep_unscorable_labels"] = True
-    data["candidates_dir"] = "data/rachel_geometry_candidates/candidates_world_v10_r4_scoreall"
+    # <training candidates dir>_scoreall: candidates_world_v10_r4 -> ..._r4_scoreall,
+    # candidates_world_v10_r5 -> ..._r5_scoreall. Built ONCE per round by the
+    # candidates step of the first scoring run (--steps candidates inference);
+    # later scoring runs in the same round use --steps inference.
+    train_dir = data.get("candidates_dir", "data/rachel_geometry_candidates/candidates_world_v10_r4")
+    data["candidates_dir"] = train_dir.rstrip("/") + "_scoreall"
     inf = cfg.setdefault("inference", {})
     inf["labeled_only"] = False
     inf["checkpoint"] = f"data/output/{run}/best_model.pt"
@@ -58,13 +63,16 @@ def make(run: str, force: bool = False) -> Path | None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", nargs="*", help="run names (default: all collected)")
+    ap.add_argument("--prefix", default="world_v10_fourclass_r4",
+                    help="collected-run prefix to pick up when --runs is not given "
+                         "(round_5 balancing arms: world_v10_fourclass_r5)")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
     runs = args.runs
     if not runs:
         gpu = REPO / "experiments" / "gpu_results"
-        runs = sorted(d.name for d in gpu.glob("world_v10_fourclass_r4_*")
+        runs = sorted(d.name for d in gpu.glob(f"{args.prefix}_*")
                       if (d / "scored_candidates.parquet").exists()
                       and not d.name.endswith("_score"))   # never double-suffix
     print(f"generating scoring configs for {len(runs)} run(s)")

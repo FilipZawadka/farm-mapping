@@ -480,6 +480,45 @@ def _stage_code(host: str, port: int, code_dir: str = "/workspace/farm-mapping")
     tar.stdout.close()
     rc = ssh.wait(timeout=600)
     log.info("staged %d code trees to %s (rc=%s)", len(trees), code_dir, rc)
+    if rc != 0:
+        raise RuntimeError(
+            f"code staging to {host}:{port} failed (rc={rc}). The pod would run a MIX of "
+            "old and new files -- a partial stage once left training/config.py, dataset.py "
+            "and train.py stale while balancing.py was current, which would have silently "
+            "disabled the sampler in a balancing campaign."
+        )
+    # Verify rather than trust: a broken pipe mid-extract leaves some files updated
+    # and others stale, with a zero exit and nothing in the log to show it.
+    _verify_staged(host, port, repo, code_dir)
+
+
+def _verify_staged(host: str, port: int, repo, code_dir: str) -> None:
+    """Compare md5 of every staged .py on the pod against the working tree."""
+    import hashlib, subprocess
+    local = {}
+    for tree in ("training", "experiments"):
+        for f in sorted((repo / tree).rglob("*.py")):
+            local[str(f.relative_to(repo))] = hashlib.md5(f.read_bytes()).hexdigest()
+    if not local:
+        return
+    out = subprocess.run(
+        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=20",
+         "-p", str(port), f"root@{host}",
+         f'cd {code_dir} && find training experiments -name "*.py" | sort | xargs md5sum 2>/dev/null'],
+        capture_output=True, text=True, timeout=300,
+    )
+    remote = {}
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            remote[parts[1]] = parts[0]
+    bad = sorted(f for f, h in local.items() if remote.get(f) != h)
+    if bad:
+        raise RuntimeError(
+            f"code staging to {host}:{port} is INCOMPLETE: {len(bad)} file(s) differ "
+            f"from the working tree, e.g. {bad[:5]}. Re-run the launch."
+        )
+    log.info("verified %d staged .py files match the working tree", len(local))
 
 
 def _ssh_run_startup(host: str, port: int, script: str, nv_log: str | None = None) -> None:

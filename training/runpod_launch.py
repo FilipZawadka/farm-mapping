@@ -277,8 +277,16 @@ def _build_startup_script(cfg: PipelineConfig, config_name: str, steps: list[str
     # can then be staged directly onto the volume, taking GitHub off the critical
     # path entirely.
     git_sync = (
+        # Reset to the CONFIGURED branch, not whatever the volume checkout happens
+        # to be on. The volume is long-lived and shared: it sat on `more_cnn_tests`
+        # from an earlier campaign, so `origin/$(symbolic-ref HEAD)` silently reset
+        # every freshly staged file back to that old branch. The round_5 balancing
+        # arms trained with no sampler because of it -- config.py lacked
+        # region_balancing, so the key parsed as None and the arms became copies of
+        # the control, with nothing in any log to show it.
         f"(cd {code_dir} && timeout 120 git fetch origin"
-        f" && timeout 120 git reset --hard origin/$(git symbolic-ref --short HEAD 2>/dev/null || echo {branch}))"
+        f" && timeout 120 git checkout -B {branch} origin/{branch}"
+        f" && timeout 120 git reset --hard origin/{branch})"
         f" || (echo 're-cloning {code_dir} from {repo} via /tmp'"
         f" && rm -rf /tmp/__repo_tmp"
         f" && timeout 180 git clone --branch {branch} --single-branch --no-checkout {repo} /tmp/__repo_tmp"

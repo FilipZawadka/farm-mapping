@@ -27,20 +27,33 @@ EXPORT = REPO / "web" / "scripts" / "export_dataset.py"
 WEB_DATA = REPO / "web" / "public" / "data"
 
 ARMS = {
-    "a": "baseline (v9/v6 recipe)",
-    "b": "freeze0 only",
-    "c": "6 bands only",
-    "d": "freeze0 + 6 bands",
-    "e": "DenseNet-121 (ImageNet init, +freeze0 +6 bands)",
-    "f": "freeze5 + full-LR unfreeze",
+    "r4": {
+        "a": "baseline (v9/v6 recipe)",
+        "b": "freeze0 only",
+        "c": "6 bands only",
+        "d": "freeze0 + 6 bands",
+        "e": "DenseNet-121 (ImageNet init, +freeze0 +6 bands)",
+        "f": "freeze5 + full-LR unfreeze",
+    },
+    # round_5: same recipe as r4 arm A on Rachel's round_5 data (HIC<=1.3x LMIC
+    # cap, 9 held-out generalization countries) with region-balanced sampling
+    "r5": {
+        "a": "baseline, no sampler (control)",
+        "g": "region-balanced: grouped countries, uniform, class-conditional",
+        "h": "region-balanced: 3 buckets us/europe/rest, class-conditional",
+        "i": "region-balanced: per-country cap 20%, class-conditional",
+    },
 }
+ROUND_LABEL = {"r4": "Round 4", "r5": "Round 5 (geo-balanced)"}
 
 
-def arm_of(run: str) -> tuple[str, str]:
-    """('b', '42') from world_v10_fourclass_r4_b_s42[_score]."""
-    tail = run.rsplit("_r4_", 1)[-1].removesuffix("_score")   # e.g. 'b_s42'
-    arm, _, seed = tail.partition("_s")
-    return arm, seed
+def arm_of(run: str) -> tuple[str, str, str]:
+    """('r4', 'b', '42') from world_v10_fourclass_r4_b_s42[_score]."""
+    import re
+    m = re.search(r"_(r\d)_([a-z])_s(\d+)", run)
+    if not m:
+        raise ValueError(f"cannot parse round/arm/seed from {run}")
+    return m.group(1), m.group(2), m.group(3)
 
 
 def runs_available() -> list[Path]:
@@ -51,24 +64,26 @@ def runs_available() -> list[Path]:
     publishing those would put a partial map on the site under a name that looks
     like a full release.
     """
-    return sorted(d for d in GPU.glob("world_v10_fourclass_r4_*_score")
+    return sorted(d for d in GPU.glob("world_v10_fourclass_r[45]_*_score")
                   if (d / "scored_candidates.parquet").exists())
 
 
 def export_one(d: Path, out: Path, when: str, dry: bool) -> bool:
     run = d.name.removesuffix("_score")      # dataset id = the model's name
-    arm, seed = arm_of(d.name)
+    rnd, arm, seed = arm_of(d.name)
     train_dir = d.parent / run               # metrics live with the training run
-    desc = ARMS.get(arm, arm)
+    desc = ARMS.get(rnd, {}).get(arm, arm)
+    rlabel = ROUND_LABEL.get(rnd, rnd)
+    rtag = {"r4": "round_4", "r5": "round_5"}.get(rnd, rnd)
     cmd = [sys.executable, str(EXPORT),
            "--parquet", str(d / "scored_candidates.parquet"),
            "--id", run,
-           "--version", f"Round 4 — arm {arm.upper()}: {desc} (seed {seed})",
+           "--version", f"{rlabel} — arm {arm.upper()}: {desc} (seed {seed})",
            "--date", when,
            "--label-mode", "four_class",
            "--slim-geojson",
            "--out", str(out),
-           "--notes", f"round_4 labels; arm {arm.upper()} = {desc}; seed {seed}."]
+           "--notes", f"{rtag} labels; arm {arm.upper()} = {desc}; seed {seed}."]
     for opt, fname in (("--metrics", "training_metrics.json"),
                        ("--per-country", "eval_metrics_per_country.json"),
                        ("--config", "config.yaml")):

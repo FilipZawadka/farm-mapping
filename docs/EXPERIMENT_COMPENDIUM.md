@@ -397,7 +397,7 @@ cluster ids are ephemeral (location, not identity, is the durable key).
 
 | Change | Evidence |
 |---|---|
-| `freeze_backbone_epochs: 0` | +0.0045 AUC, +5.9σ — the only win in 20 runs |
+| `freeze_backbone_epochs: 0` | +0.0045 AUC, +5.9σ — the only win in 20 runs. **Superseded (Part 7):** the unfreeze path also cut the backbone LR 10×, so this lever changed two things; round_4 decomposed it and found the gain is inside seed noise with a 1-in-3 failure mode. Not adopted. |
 | Drop NDVI/NDBI/NDWI (9→6 channels) | indistinguishable from 9ch; RGB+NIR is −13σ |
 | Merge or drop Cattle | 3-class is exactly 0.0000; removes ~80% of metric noise |
 | OOD screening threshold 0.4 | +0.055 recall for +0.018 FPR (pre-registered rule) |
@@ -427,3 +427,129 @@ before producing results.
 5. **The spatially blocked retrain (E0.2)** — split artifact ready, run not done.
 6. **Label-noise ceiling (E0.4)** — no double-annotation, so we cannot say how
    much residual error is annotator disagreement.
+7. **Seed replication of the round_5 balancing arms** — three schemes agree in
+   direction (+0.02–0.03 OOD) but each is one run; see Part 8.
+8. **Coordinate-based balancing** — every scheme so far uses country as the unit;
+   `docs/GEO_BALANCING_PROPOSALS.md` lays out the lat/lon-based alternatives and
+   the free diagnostics to run before spending on them.
+
+## Part 7 — Round 4: the recipe levers re-tested with seed replication (18 runs)
+
+Full report: `docs/ROUND4_CAMPAIGN_REPORT.md` and the round-four chapter of
+`paper/main.md` (§7). Only the conclusions are repeated here.
+
+**Why it was run.** Rachel's round_4 delivery folded the qualitative-evaluation
+hold-out into training (train 12,062 → 21,478, +73 %), which retired the frozen
+benchmark of Part 1. The two recommended changes from Part 5 (no freeze phase; six
+bands) had each been validated once, on single runs; this campaign re-tested them
+with three seeds per arm and added a DenseNet comparison.
+
+**What was found (generalization AUC, 3-seed means; archived v9 = 0.874):**
+
+| Arm | Change | AUC | Verdict |
+|---|---|---|---|
+| A | none (v9 recipe) | 0.833 | data effect: eval +0.009, generalization **−0.041** vs v9 |
+| B | freeze0 | 0.857 ± 0.036 | not distinguishable; one seed in three collapses |
+| C | 6 bands | 0.833 ± 0.005 | **null replicated** — indices are dead weight |
+| D | B + C | 0.861 ± 0.033 | not distinguishable |
+| E | DenseNet-121 | 0.815 | worst OOD, best in-domain eval — a specialist |
+| F | freeze kept, unfreeze at full LR | 0.850 ± 0.027 | decomposes B: the LR carries ~⅔ of the effect |
+
+Three conclusions changed the record:
+
+1. **No lever beat the baseline** once seed variance was counted; **v9 stays production.**
+2. **"freeze0 helps" was a learning-rate story.** The unfreeze transition rebuilt the
+   optimiser at 0.1× LR; `freeze0` skipped that branch, so the historical +0.0045
+   was a 10× backbone-LR change with a reliability cost (seed sd 0.005–0.009 at
+   1e-5 vs 0.027–0.036 at 1e-4).
+3. **Seed variance is mostly cross-country calibration drift**, not skill: within-
+   country AUC has ~3× lower seed sd than pooled, all arms are near-equal within
+   countries (0.832–0.850), and v9's within-country 0.868 beats every arm.
+
+Also established: more focal-country labels *cost* out-of-domain transfer, which is
+what motivated round_5.
+
+## Part 8 — Round 5: geographic balancing on the re-capped labels (4 runs)
+
+**Why it was run.** Round_4's lesson was that the training mixture had tilted
+toward the focal countries. Rachel's round_5 delivery is the data-side corrective
+— a split-level cap (HIC ≤ 1.3× LMIC for Poultry/NotFarm, per-country ceilings;
+train 21,888 → 15,187, the excess moved to qual_eval), ~30 label corrections, all
+of Bangladesh moved to generalization, and PER/IDN/MOZ added as fully held-out
+countries (generalization 662 → 949 rows, 9 countries). Round_4 arm A is therefore
+no longer a valid control (its training set contained rows now held out). The
+campaign asks the sampler-side question on top: does **region-balanced sampling**
+help further? Design: `docs/COUNTRY_BALANCING_PLAN.md`; runbook
+`scripts/run_round5_campaign.sh`; evaluation `experiments/evaluate_balancing.py`.
+
+**Pre-run audit** (`experiments/results/r5_train_country_audit.txt`): 15,187 train
+rows across 151 countries; 32 countries are all-NotFarm (7.5 % of negatives); a
+region-only classifier beats majority class by **+0.254** — the geographic
+shortcut the samplers target.
+
+**Arms** (one seed each, 44; same recipe as round_4 arm A):
+
+| Arm | Sampler | Groups | NMI(label,region) natural → achieved | ESS |
+|---|---|---|---|---|
+| A | none (control) | — | — | — |
+| G | grouped countries (≥300 rows), uniform, class-conditional | 19 | 0.303 → 0.086 | 0.458 |
+| H | 3 buckets us / europe / rest, class-conditional | 3 | 0.094 → 0.000 | 0.620 |
+| I | per-country cap 20 %, class-conditional | 151 | 0.384 → 0.057 | 0.499 |
+
+The samplers demonstrably did their job: label–region dependence collapsed, ESS
+stayed well above the 0.25 trip-wire, ≤0.3 % of weights were clipped, and the
+region-only shortcut fell from +0.254 to +0.214 (reduced, not removed).
+
+**Results — farm ROC-AUC, single seed per arm:**
+
+| Slice | n | A | G | H | I |
+|---|---|---|---|---|---|
+| generalization (OOD, 9 countries) | 915 | 0.834 | 0.854 | **0.866** | 0.861 |
+| eval (in-domain) | 645 | 0.943 | 0.946 | 0.941 | 0.941 |
+| test (in-domain) | 1,114 | 0.987 | 0.985 | 0.987 | 0.989 |
+
+Confirmatory contrasts on generalization (Holm): h>a +0.031 (p 0.060), i>a +0.026
+(p 0.102), g>a +0.019 (p 0.164) — **none distinguishable**; the single-run
+decision band is ±0.023 (σ imported from the v9 five-seed study, since no arm has
+repeats). In-domain slices are flat (all |Δ| ≤ 0.004), which is the desired
+signature: the samplers moved out-of-domain behaviour without costing in-domain.
+
+Per-country generalization AUC shows where the movement is:
+
+| | ALB | BGD | COD | IDN | IND | MAR | MOZ | NGA | PER |
+|---|---|---|---|---|---|---|---|---|---|
+| A | 0.896 | 0.828 | 0.868 | 0.758 | 0.719 | 0.755 | 0.895 | 0.889 | 0.706 |
+| H | 0.948 | 0.863 | 0.845 | 0.773 | 0.730 | **0.806** | 0.906 | 0.875 | **0.773** |
+| I | 0.952 | 0.848 | 0.843 | 0.751 | 0.721 | 0.783 | 0.918 | 0.903 | 0.733 |
+
+H's gain concentrates in the countries that were weakest under every previous
+recipe (MAR +0.05, PER +0.07) while giving up a little in COD/NGA — consistent
+with balancing spending capacity where the training set was thinnest. Calibration
+worsens slightly under all three samplers (generalization ECE: A 0.158, G 0.160,
+I 0.167, H 0.189); Pigs are still never predicted out-of-domain (F1 = 0 for every arm).
+
+**Conclusions.**
+
+1. All three geographic balancers improve out-of-domain AUC, in a consistent order
+   (H > I > G), with no in-domain cost. This is the first lever since SoftCon
+   pretraining to move generalization in the right direction.
+2. It is **not yet a result**: one seed per arm, no contrast survives correction, and
+   round_4 §4.1 is the standing demonstration of what a single seed is worth
+   (b>a went from p=0.003 to p=0.29 when seeds two and three landed).
+3. The round_5 numbers are **not comparable to v9** (different generalization
+   slice), so v9 remains the site default; the four round_5 models are published
+   alongside it.
+4. **Next:** H and I at seeds 42/43 (~$4) to settle it; then the coordinate-based
+   schemes in `docs/GEO_BALANCING_PROPOSALS.md`, which generalise arm I from
+   country cells to equal-area spatial cells and to density-ratio weighting toward
+   the deployment distribution.
+
+**Infrastructure findings from this campaign** (all fixed, all in `develop`):
+the pod git-sync reset to the *volume's* current branch instead of the configured
+one, which silently reverted staged code — the first balanced wave trained with no
+sampler and would have reported a clean null; code staging could complete
+partially with exit 0 and is now checksum-verified; a failed launch could be
+recorded as launched. Each is the kind of error that produces a confident wrong
+answer rather than a crash, which is why every arm's `sampling_report.json` was
+checked individually before results were read.
+

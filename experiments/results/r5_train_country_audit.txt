@@ -1,0 +1,190 @@
+rows loaded: 157,102 | splits: {'predict': 124420, 'train': 15187, 'qual_eval': 11158, 'val': 3611, 'test': 1114, 'generalization': 949, 'eval': 663}
+
+### split = train: 15,187 rows
+
+labelled rows: 15,187 across 151 countries | classes: NotFarm=7,754, Poultry=5,487, Pigs=1,785, Cattle=161 | farm rate 0.489
+
+per-country composition of the split (top 40 by rows; '*' = single-label country; pos%/neg% = share of ALL positives / negatives):
+      NotFarm  Poultry  Pigs  Cattle     n  share%  farm_rate  pos%  neg%         region single_label
+iso3                                                                                                 
+USA       548      843   840      50  2281   15.02      0.760  23.3   7.1  north_america             
+MEX       129     1126   258      72  1585   10.44      0.919  19.6   1.7  latin_america             
+DEU       618      161    21       0   800    5.27      0.228   2.4   8.0         europe             
+UKR       653        2     0       0   655    4.31      0.003   0.0   8.4         europe             
+AUS        37      569    34       2   642    4.23      0.942   8.1   0.5        oceania             
+RUS       620        1     0       0   621    4.09      0.002   0.0   8.0         europe             
+POL       271      301    22       0   594    3.91      0.544   4.3   3.5         europe             
+THA       187      298    83       3   571    3.76      0.673   5.2   2.4           asia             
+ITA       381      151    28       1   561    3.69      0.321   2.4   4.9         europe             
+FRA       206      330     6       0   542    3.57      0.620   4.5   2.7         europe             
+BRA       139      204   112       2   457    3.01      0.696   4.3   1.8  latin_america             
+BLR       360        0     0       0   360    2.37      0.000   0.0   4.6         europe            *
+CZE       201       86    41       0   328    2.16      0.387   1.7   2.6         europe             
+CHL        60      178    69       1   308    2.03      0.805   3.3   0.8  latin_america             
+TUR       252       34     0       5   291    1.92      0.134   0.5   3.2           asia             
+ROU        41      143    74       0   258    1.70      0.841   2.9   0.5         europe             
+IND       229       18     0       1   248    1.63      0.077   0.3   3.0           asia             
+MYS       224        6     0       0   230    1.51      0.026   0.1   2.9           asia             
+ARG        45       64    64       2   175    1.15      0.743   1.7   0.6  latin_america             
+GBR       155        9     1       0   165    1.09      0.061   0.1   2.0         europe             
+PRT        75       61    25       0   161    1.06      0.534   1.2   1.0         europe             
+HUN        42       89    28       0   159    1.05      0.736   1.6   0.5         europe             
+ZAF        90       51     7       3   151    0.99      0.404   0.8   1.2         africa             
+SAU        99       39     0       3   141    0.93      0.298   0.6   1.3           asia             
+KAZ       135        1     0       3   139    0.92      0.029   0.1   1.7           asia             
+EGY       120        6     0       5   131    0.86      0.084   0.1   1.5         africa             
+ESP       107        5    11       0   123    0.81      0.130   0.2   1.4         europe             
+SVK        59       29     5       0    93    0.61      0.366   0.5   0.8         europe             
+VNM        77        8     0       0    85    0.56      0.094   0.1   1.0           asia             
+SWE        75        8     1       0    84    0.55      0.107   0.1   1.0         europe             
+DNK        67        7     2       0    76    0.50      0.118   0.1   0.9         europe             
+LTU        58       15     3       0    76    0.50      0.237   0.2   0.7         europe             
+JPN        65       10     0       0    75    0.49      0.133   0.1   0.8           asia             
+LVA        70        0     1       0    71    0.47      0.014   0.0   0.9         europe             
+NLD        39       20     9       0    68    0.45      0.426   0.4   0.5         europe             
+GRC        46       21     0       0    67    0.44      0.313   0.3   0.6         europe             
+KEN        51        5     0       0    56    0.37      0.089   0.1   0.7         africa             
+BEL        38       13     5       0    56    0.37      0.321   0.2   0.5         europe             
+CUB        55        0     1       0    56    0.37      0.018   0.0   0.7  latin_america             
+CAN        45        7     0       0    52    0.34      0.135   0.1   0.6  north_america             
+... 111 more countries with 1,595 rows (985 NotFarm / 610 farm)
+
+where the positives come from: USA 23.3%, MEX 19.6%, AUS 8.1%, THA 5.2%, FRA 4.5%, POL 4.3%
+where the negatives come from: UKR 8.4%, RUS 8.0%, DEU 8.0%, USA 7.1%, ITA 4.9%, BLR 4.6%, POL 3.5%, TUR 3.2%
+single-label countries: 32 all-NotFarm (580 rows = 7.5% of all negatives), 3 all-farm (14 rows)
+
+by macro-region:
+               NotFarm  farm     n  farm_rate
+region                                       
+europe            4454  1830  6284      0.291
+latin_america      534  2260  2794      0.809
+asia              1674   755  2429      0.311
+north_america      593  1740  2333      0.746
+africa             462   243   705      0.345
+oceania             37   605   642      0.942
+
+label ~ region dependence (binary farm label):
+  NMI(label; country) = 0.383   NMI(label; macro-region) = 0.185   (0 = independent, 1 = region determines the label)
+  accuracy of a country-only classifier = 0.801   macro-region-only = 0.737   vs majority class = 0.511  (shortcut gain: country +0.291, macro-region +0.227)
+
+====================================================================================================
+G grouped_country (uniform, class-conditional)
+====================================================================================================
+region balancing: scheme=grouped_country class_conditional=True (binary) max_weight=10.0 min_country_rows=300
+  rows=15187 groups=19 clipped=47 (0.3%) weight range [0.259, 10.0] ESS ratio=0.4584
+  label~region NMI: natural=0.302 -> achieved=0.086   class marginal natural={0: 0.5106, 1: 0.4894} achieved={0: 0.5501, 1: 0.4499}
+  group                       n   nat%   nom%   tgt%   ach%  farm_nat  farm_ach   w_min   w_max
+  USA                      2281  15.02   5.26   5.40   5.87     0.760     0.503   0.259   0.808
+  rest_asia                1858  12.23   5.26   5.40   5.87     0.200     0.503   0.298   1.210
+  rest_europe              1823  12.00   5.26   5.40   5.87     0.372     0.503   0.387   0.661
+  MEX                      1585  10.44   5.26   5.40   5.87     0.919     0.503   0.308   3.433
+  DEU                       800   5.27   5.26   5.40   5.87     0.228     0.503   0.717   2.466
+  rest_africa               705   4.64   5.26   5.40   5.87     0.345     0.503   0.959   1.847
+  UKR                       655   4.31   5.26   5.40   3.05     0.003     0.043   0.678  10.000
+  AUS                       642   4.23   5.26   5.40   5.39     0.942     0.548   0.742  10.000
+  RUS                       621   4.09   5.26   5.40   2.98     0.002     0.022   0.714  10.000
+  POL                       594   3.91   5.26   5.40   5.87     0.544     0.503   1.389   1.634
+  THA                       571   3.76   5.26   5.40   5.87     0.672     0.503   1.169   2.369
+  ITA                       561   3.69   5.26   5.40   5.87     0.321     0.503   1.163   2.493
+  FRA                       542   3.57   5.26   5.40   5.87     0.620     0.503   1.336   2.150
+  BRA                       457   3.01   5.26   5.40   5.87     0.696     0.503   1.411   3.186
+  rest_latin_america        444   2.92   5.26   5.40   5.87     0.536     0.503   1.886   2.150
+  BLR                       360   2.37   5.26   2.76   3.00     0.000     0.000   1.265   1.265
+  CZE                       328   2.16   5.26   5.40   5.87     0.387     0.503   2.204   3.534
+  CHL                       308   2.03   5.26   5.40   5.87     0.805     0.503   1.810   7.382
+  rest_north_america         52   0.34   5.26   5.40   3.38     0.135     0.137   9.842  10.000
+  (nat = natural share, nom = share law alone, tgt = after the class-availability rule, ach = achieved after clipping)
+  shortcut gain (region-only classifier minus majority class): by group natural +0.254 -> under sampler +0.011; by country natural +0.291 -> under sampler +0.070
+
+====================================================================================================
+H bucket us/europe/rest (uniform, class-conditional)
+====================================================================================================
+region balancing: scheme=bucket class_conditional=True (binary) max_weight=10.0
+  rows=15187 groups=3 clipped=0 (0.0%) weight range [0.5803, 4.7165] ESS ratio=0.6173
+  label~region NMI: natural=0.093 -> achieved=-0.000   class marginal natural={0: 0.5106, 1: 0.4894} achieved={0: 0.5106, 1: 0.4894}
+  group                       n   nat%   nom%   tgt%   ach%  farm_nat  farm_ach   w_min   w_max
+  rest                     6622  43.60  33.33  33.33  33.33     0.584     0.489   0.640   0.939
+  europe                   6284  41.38  33.33  33.33  33.33     0.291     0.489   0.580   1.354
+  us                       2281  15.02  33.33  33.33  33.33     0.760     0.489   1.430   4.716
+  (nat = natural share, nom = share law alone, tgt = after the class-availability rule, ach = achieved after clipping)
+  shortcut gain (region-only classifier minus majority class): by group natural +0.152 -> under sampler +0.000; by country natural +0.291 -> under sampler +0.186
+
+====================================================================================================
+I capped 20%/country (class-conditional)
+====================================================================================================
+region balancing: scheme=capped class_conditional=True (binary) max_weight=10.0 max_share=0.2
+  rows=15187 groups=151 clipped=16 (0.1%) weight range [0.5255, 10.0] ESS ratio=0.498
+  label~region NMI: natural=0.383 -> achieved=0.056   class marginal natural={0: 0.5106, 1: 0.4894} achieved={0: 0.5377, 1: 0.4623}
+  group                       n   nat%   nom%   tgt%   ach%  farm_nat  farm_ach   w_min   w_max
+  USA                      2281  15.02  15.02  15.31  16.12     0.760     0.499   0.705   2.238
+  MEX                      1585  10.44  10.44  10.64  11.21     0.919     0.499   0.583   6.607
+  DEU                       800   5.27   5.27   5.37   5.66     0.228     0.499   0.696   2.356
+  UKR                       655   4.31   4.31   4.40   2.45     0.003     0.054   0.539  10.000
+  AUS                       642   4.23   4.23   4.31   4.54     0.942     0.499   0.569   9.331
+  RUS                       621   4.09   4.09   4.17   2.27     0.002     0.029   0.539  10.000
+  POL                       594   3.91   3.91   3.99   4.20     0.544     0.499   0.986   1.179
+  THA                       571   3.76   3.76   3.83   4.04     0.672     0.499   0.797   1.642
+  ITA                       561   3.69   3.69   3.77   3.97     0.321     0.499   0.792   1.670
+  FRA                       542   3.57   3.57   3.64   3.83     0.620     0.499   0.864   1.415
+  BRA                       457   3.01   3.01   3.07   3.23     0.696     0.499   0.770   1.768
+  BLR                       360   2.37   2.37   1.23   1.30     0.000     0.000   0.548   0.548
+  CZE                       328   2.16   2.16   2.20   2.32     0.387     0.499   0.877   1.384
+  CHL                       308   2.03   2.03   2.07   2.18     0.805     0.499   0.665   2.760
+  TUR                       291   1.92   1.92   1.95   2.06     0.134     0.499   0.621   3.998
+  ROU                       258   1.70   1.70   1.73   1.82     0.841     0.499   0.637   3.384
+  IND                       248   1.63   1.63   1.67   1.75     0.077     0.499   0.582   6.995
+  MYS                       230   1.51   1.51   1.54   1.21     0.026     0.327   0.552  10.000
+  ARG                       175   1.15   1.15   1.18   1.24     0.743     0.499   0.721   2.091
+  GBR                       165   1.09   1.09   1.11   1.17     0.061     0.499   0.572   8.842
+  PRT                       161   1.06   1.06   1.08   1.14     0.534     0.499   1.003   1.154
+  HUN                       159   1.05   1.05   1.07   1.12     0.736     0.499   0.728   2.036
+  ZAF                       151   0.99   0.99   1.01   1.07     0.404     0.499   0.902   1.327
+  SAU                       141   0.93   0.93   0.95   1.00     0.298     0.499   0.766   1.799
+  KAZ                       139   0.92   0.92   0.93   0.76     0.029     0.349   0.554  10.000
+  EGY                       131   0.86   0.86   0.88   0.93     0.084     0.499   0.587   6.382
+  ESP                       123   0.81   0.81   0.83   0.87     0.130     0.499   0.618   4.120
+  SVK                        93   0.61   0.61   0.62   0.66     0.366     0.499   0.848   1.466
+  VNM                        85   0.56   0.56   0.57   0.60     0.094     0.499   0.594   5.694
+  SWE                        84   0.55   0.55   0.56   0.59     0.107     0.499   0.602   5.002
+  LTU                        76   0.50   0.50   0.51   0.54     0.237     0.499   0.705   2.263
+  DNK                        76   0.50   0.50   0.51   0.54     0.118     0.499   0.610   4.525
+  JPN                        75   0.49   0.49   0.50   0.53     0.133     0.499   0.621   4.019
+  LVA                        71   0.47   0.47   0.48   0.32     0.014     0.208   0.545  10.000
+  NLD                        68   0.45   0.45   0.46   0.48     0.426     0.499   0.938   1.256
+  GRC                        67   0.44   0.44   0.45   0.47     0.313     0.499   0.783   1.710
+  KEN                        56   0.37   0.37   0.38   0.40     0.089     0.499   0.591   6.002
+  BEL                        56   0.37   0.37   0.38   0.40     0.321     0.499   0.792   1.667
+  CUB                        56   0.37   0.37   0.38   0.26     0.018     0.249   0.547  10.000
+  CAN                        52   0.34   0.34   0.35   0.37     0.135     0.499   0.621   3.981
+  ... 111 more groups
+  (nat = natural share, nom = share law alone, tgt = after the class-availability rule, ach = achieved after clipping)
+  shortcut gain (region-only classifier minus majority class): by group natural +0.291 -> under sampler +0.000; by country natural +0.291 -> under sampler +0.000
+
+====================================================================================================
+J grouped_country WITHOUT class conditioning (ablation)
+====================================================================================================
+region balancing: scheme=grouped_country class_conditional=False (binary) max_weight=10.0 min_country_rows=300
+  rows=15187 groups=19 clipped=52 (0.3%) weight range [0.3572, 10.0] ESS ratio=0.6031
+  label~region NMI: natural=0.302 -> achieved=0.318   class marginal natural={0: 0.5106, 1: 0.4894} achieved={0: 0.5473, 1: 0.4527}
+  group                       n   nat%   nom%   tgt%   ach%  farm_nat  farm_ach   w_min   w_max
+  USA                      2281  15.02   5.26   5.26   5.37     0.760     0.760   0.357   0.357
+  rest_asia                1858  12.23   5.26   5.26   5.37     0.200     0.200   0.439   0.439
+  rest_europe              1823  12.00   5.26   5.26   5.37     0.372     0.372   0.447   0.447
+  MEX                      1585  10.44   5.26   5.26   5.37     0.919     0.919   0.514   0.514
+  DEU                       800   5.27   5.26   5.26   5.37     0.228     0.228   1.018   1.018
+  rest_africa               705   4.64   5.26   5.26   5.37     0.345     0.345   1.156   1.156
+  UKR                       655   4.31   5.26   5.26   5.37     0.003     0.003   1.244   1.244
+  AUS                       642   4.23   5.26   5.26   5.37     0.942     0.942   1.269   1.269
+  RUS                       621   4.09   5.26   5.26   5.37     0.002     0.002   1.312   1.312
+  POL                       594   3.91   5.26   5.26   5.37     0.544     0.544   1.372   1.372
+  THA                       571   3.76   5.26   5.26   5.37     0.672     0.672   1.427   1.427
+  ITA                       561   3.69   5.26   5.26   5.37     0.321     0.321   1.452   1.452
+  FRA                       542   3.57   5.26   5.26   5.37     0.620     0.620   1.503   1.503
+  BRA                       457   3.01   5.26   5.26   5.37     0.696     0.696   1.783   1.783
+  rest_latin_america        444   2.92   5.26   5.26   5.37     0.536     0.536   1.835   1.835
+  BLR                       360   2.37   5.26   5.26   5.37     0.000     0.000   2.263   2.263
+  CZE                       328   2.16   5.26   5.26   5.37     0.387     0.387   2.484   2.484
+  CHL                       308   2.03   5.26   5.26   5.37     0.805     0.805   2.646   2.646
+  rest_north_america         52   0.34   5.26   5.26   3.42     0.135     0.135  10.000  10.000
+  (nat = natural share, nom = share law alone, tgt = after the class-availability rule, ach = achieved after clipping)
+  shortcut gain (region-only classifier minus majority class): by group natural +0.254 -> under sampler +0.214; by country natural +0.291 -> under sampler +0.243

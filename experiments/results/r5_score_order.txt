@@ -1,0 +1,4 @@
+world_v10_fourclass_r5_a_s44_score
+world_v10_fourclass_r5_g_s44_score
+world_v10_fourclass_r5_h_s44_score
+world_v10_fourclass_r5_i_s44_score

@@ -20,6 +20,7 @@
     --s3: #1baf7a;  /* arm H  */
     --s4: #eda100;  /* arm I  */
     --sref: #4b4f46; /* v9 reference */
+    --sbase: #9a9e93; /* labels-only baseline, dotted */
     --prec: #2a78d6; /* Rachel's precision blue  */
     --rec:  #eb6834; /* Rachel's recall orange   */
     --cell: 42, 120, 214;
@@ -35,7 +36,7 @@
       --ink: #f1f3ec; --ink-2: #bcc1b3; --muted: #8a8f82;
       --hair: #2a2e27; --base: #3a3f36;
       --accent: #7fc2a6; --accent-ink: #0f110e; --accent-soft: rgba(127, 194, 166, 0.14);
-      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --sref: #c3c7bb;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --sref: #c3c7bb; --sbase: #6f746a;
       --prec: #3987e5; --rec: #d95926; --cell: 57, 135, 229;
       --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     }
@@ -46,7 +47,7 @@
     --ink: #f1f3ec; --ink-2: #bcc1b3; --muted: #8a8f82;
     --hair: #2a2e27; --base: #3a3f36;
     --accent: #7fc2a6; --accent-ink: #0f110e; --accent-soft: rgba(127, 194, 166, 0.14);
-    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --sref: #c3c7bb;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --sref: #c3c7bb; --sbase: #6f746a;
     --prec: #3987e5; --rec: #d95926; --cell: 57, 135, 229;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
@@ -142,6 +143,8 @@
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; }
   .legend i.dash { border-top-style: dashed; }
+  .legend i.dot { border-top-style: dotted; border-top-width: 3px; }
+  .card .swatch.dot { border-top-style: dotted; }
   .legend i.faint { opacity: 0.45; }
   .panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
   .panel h3 { font-size: 13px; margin-bottom: 2px; display: flex; justify-content: space-between; font-weight: 600; }
@@ -330,7 +333,12 @@
   const GRID = D.grid, N = GRID.length;
   const MODELS = D.models;
   const ARMS = MODELS.filter(m => m.slot !== 'ref');
-  const COLOR = m => m.slot === 'ref' ? 'var(--sref)' : 'var(--s' + m.slot + ')';
+  // The labels without any model: every geometry-selected candidate is called a
+  // farm (or poultry). Precision is then the prevalence in the representative
+  // sample, recall is 1, and nothing depends on the threshold.
+  const BASE = { key: 'labels', label: 'labels only · no model', desc: 'every candidate the geometry pipeline selected is called a farm; precision = prevalence, recall = 1', slot: 'base' };
+  const COLOR = m => m.slot === 'ref' ? 'var(--sref)' : m.slot === 'base' ? 'var(--sbase)' : 'var(--s' + m.slot + ')';
+  const DASH = m => m.slot === 'ref' ? '6 5' : m.slot === 'base' ? '2 5' : null;
   const state = { task: 'farm', mode: 'own', t: 0.4, country: 'ALB', arm: 'h' };
   const $ = id => document.getElementById(id);
   const fmt3 = x => (x == null || isNaN(x)) ? '–' : x.toFixed(3);
@@ -351,11 +359,19 @@
     const fp = P > 0 ? Math.max(0, Math.round(tp / P - tp)) : (tp === 0 ? null : 0);
     return { P, R, f1, tp, fp, fn: c.n_pos - tp, n: c.n, n_pos: c.n_pos };
   }
+  function baseRows() {
+    const first = MODELS.find(m => T(m.key)); if (!first) return [];
+    const t = T(first.key);
+    return t.countries.map(c => { const cv = t.curves[c]; const sp = repSplit(cv); const s = cv[sp]; const p = s.n ? s.n_pos / s.n : 0;
+      return { country: c, split: sp, P: p, R: 1, f1: (1 + p) > 0 ? 2 * p / (1 + p) : 0, tp: s.n_pos, fp: s.n - s.n_pos, fn: 0, n: s.n, n_pos: s.n_pos }; });
+  }
   function perCountry(key) {
+    if (key === BASE.key) return baseRows();
     const t = T(key); if (!t) return [];
     const i = idxOf(tOf(key));
     return t.countries.map(c => { const cv = t.curves[c]; const sp = repSplit(cv); return Object.assign({ country: c, split: sp }, metricsAt(cv[sp], i)); });
   }
+  const withBase = list => list.concat([BASE]);
   function summarise(rows) {
     if (!rows.length) return null;
     const mean = k => rows.reduce((s, r) => s + r[k], 0) / rows.length;
@@ -420,20 +436,29 @@
   }
   function legend(container, items) {
     container.textContent = '';
-    items.forEach(it => { const s = el('span'); const i = el('i'); i.style.borderColor = it.color; if (it.dash) i.classList.add('dash'); if (it.faint) i.classList.add('faint'); s.appendChild(i); s.appendChild(document.createTextNode(it.label)); container.appendChild(s); });
+    items.forEach(it => { const s = el('span'); const i = el('i'); i.style.borderColor = it.color; if (it.dash) i.classList.add('dash'); if (it.dot) i.classList.add('dot'); if (it.faint) i.classList.add('faint'); s.appendChild(i); s.appendChild(document.createTextNode(it.label)); container.appendChild(s); });
   }
-  const modelLegend = () => MODELS.map(m => ({ label: m.label, color: COLOR(m), dash: m.slot === 'ref' }));
+  const modelLegend = () => withBase(MODELS).map(m => ({ label: m.label, color: COLOR(m), dash: m.slot === 'ref', dot: m.slot === 'base' }));
 
   // ---------- sections ----------
   function renderCards() {
     const box = $('cards'); box.textContent = '';
-    MODELS.forEach(m => {
-      const t = T(m.key); if (!t) return;
+    withBase(MODELS).forEach(m => {
+      const isBase = m.key === BASE.key;
+      const t = isBase ? null : T(m.key); if (!isBase && !t) return;
       const rows = perCountry(m.key), s = summarise(rows);
+      if (!s) return;
       const c = el('div', 'card');
-      const key = el('div', 'key'); const sw = el('span', 'swatch' + (m.slot === 'ref' ? ' ref' : '')); sw.style.borderColor = COLOR(m); key.appendChild(sw); key.appendChild(el('span', 'name', m.label)); c.appendChild(key);
+      const key = el('div', 'key'); const sw = el('span', 'swatch' + (m.slot === 'ref' ? ' ref' : m.slot === 'base' ? ' dot' : '')); sw.style.borderColor = COLOR(m); key.appendChild(sw); key.appendChild(el('span', 'name', m.label)); c.appendChild(key);
       c.appendChild(el('div', 'desc', m.desc));
       c.appendChild(el('div', 'big num', fmt3(s.f1)));
+      if (isBase) {
+        c.appendChild(el('div', 'at', 'mean F1 · the same at every threshold'));
+        const dl = el('dl'); const add = (k, v) => { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); };
+        add('mean precision', fmt3(s.P)); add('mean recall', fmt3(s.R)); add('weakest', s.worst.country + ' ' + fmt2(s.worst.f1));
+        add('best', rows.reduce((a, b) => b.f1 > a.f1 ? b : a).country + ' ' + fmt2(Math.max.apply(null, rows.map(r => r.f1))));
+        c.appendChild(dl); box.appendChild(c); return;
+      }
       c.appendChild(el('div', 'at', 'mean F1 at t = ' + fmt3(tOf(m.key)) + (state.mode === 'own' ? '' : ' (own argmax ' + fmt3(t.t_mean) + ')')));
       const dl = el('dl');
       const add = (k, v) => { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); };
@@ -450,7 +475,8 @@
   }
 
   function renderMeanF1() {
-    const series = MODELS.filter(m => T(m.key)).map(m => ({ label: m.label, color: COLOR(m), values: T(m.key).mean_f1_curve, dash: m.slot === 'ref' ? '6 5' : null, width: m.slot === 'ref' ? 2 : 2 }));
+    const series = MODELS.filter(m => T(m.key)).map(m => ({ label: m.label, color: COLOR(m), values: T(m.key).mean_f1_curve, dash: DASH(m), width: 2 }));
+    const bs = summarise(baseRows()); if (bs) series.push({ label: BASE.label, color: COLOR(BASE), values: GRID.map(() => bs.f1), dash: DASH(BASE), width: 2 });
     const markers = MODELS.filter(m => T(m.key)).map(m => { const i = idxOf(T(m.key).t_mean); return { x: GRID[i], y: T(m.key).mean_f1_curve[i], color: COLOR(m) }; });
     const vl = state.mode === 'own' ? [] : [{ x: state.t, color: 'var(--ink-2)' }];
     lineChart($('meanf1-chart'), { series, markers, vlines: vl, height: 280, title: 'mean per-country F1 vs threshold' });
@@ -459,12 +485,12 @@
 
   function renderTable() {
     const wrap = $('country-table'); wrap.textContent = '';
-    const models = MODELS.filter(m => T(m.key));
+    const models = withBase(MODELS.filter(m => T(m.key)));
     const rowsBy = {}; models.forEach(m => { rowsBy[m.key] = perCountry(m.key); });
     const countries = T(models[0].key).countries;
     const table = el('table'); const thead = el('thead'); const hr = el('tr');
     hr.appendChild(el('th', 'txt', 'country')); hr.appendChild(el('th', 'txt', 'split')); hr.appendChild(el('th', null, 'n · pos'));
-    models.forEach(m => { const th = el('th', 'txt'); const i = el('i'); i.style.cssText = 'display:inline-block;width:12px;border-top:2px solid ' + COLOR(m) + (m.slot === 'ref' ? ';border-top-style:dashed' : '') + ';margin-right:6px;vertical-align:middle'; th.appendChild(i); th.appendChild(document.createTextNode(m.label)); hr.appendChild(th); });
+    models.forEach(m => { const th = el('th', 'txt'); const i = el('i'); i.style.cssText = 'display:inline-block;width:12px;border-top:2px solid ' + COLOR(m) + (m.slot === 'ref' ? ';border-top-style:dashed' : m.slot === 'base' ? ';border-top-style:dotted;border-top-width:3px' : '') + ';margin-right:6px;vertical-align:middle'; th.appendChild(i); th.appendChild(document.createTextNode(m.label)); hr.appendChild(th); });
     thead.appendChild(hr); table.appendChild(thead);
     const tb = el('tbody');
     countries.forEach((c, ci) => {
@@ -475,9 +501,9 @@
       models.forEach(m => {
         const r = rowsBy[m.key][ci]; const td = el('td'); td.textContent = fmt2(r.f1);
         const sub = el('span', 'sub', fmt2(r.P) + ' · ' + fmt2(r.R)); td.appendChild(sub);
-        if (m.slot !== 'ref' && Math.abs(r.f1 - best) < 1e-9) td.classList.add('best');
+        if (m.slot !== 'ref' && m.slot !== 'base' && Math.abs(r.f1 - best) < 1e-9) td.classList.add('best');
         td.style.background = 'rgba(var(--cell), ' + Math.max(0, Math.min(0.32, (r.f1 - 0.45) / 0.55 * 0.32)).toFixed(3) + ')';
-        td.title = m.label + ' · ' + c + ' at t = ' + fmt3(tOf(m.key)) + '\nTP ' + r.tp + ' · FP ' + (r.fp == null ? '?' : r.fp) + ' · FN ' + r.fn + ' of ' + r.n + ' rows (' + r.n_pos + ' positives)';
+        td.title = m.label + ' · ' + c + (m.slot === 'base' ? ' (every candidate called positive)' : ' at t = ' + fmt3(tOf(m.key))) + '\nTP ' + r.tp + ' · FP ' + (r.fp == null ? '?' : r.fp) + ' · FN ' + r.fn + ' of ' + r.n + ' rows (' + r.n_pos + ' positives)';
         tr.appendChild(td);
       });
       tb.appendChild(tr);
@@ -497,8 +523,9 @@
     const mk = (which) => MODELS.filter(m => T(m.key) && T(m.key).curves[state.country]).map(m => {
       const c = T(m.key).curves[state.country][sp]; let vals;
       if (which === 'P') vals = c.P; else if (which === 'R') vals = c.R; else vals = c.P.map((p, i) => (p + c.R[i]) > 0 ? 2 * p * c.R[i] / (p + c.R[i]) : 0);
-      return { label: m.label, color: COLOR(m), values: vals, dash: m.slot === 'ref' ? '6 5' : null };
-    });
+      return { label: m.label, color: COLOR(m), values: vals, dash: DASH(m) };
+    }).concat((() => { const s = cv0[sp]; const p = s.n ? s.n_pos / s.n : 0; const v = which === 'P' ? p : which === 'R' ? 1 : 2 * p / (1 + p);
+      return [{ label: BASE.label, color: COLOR(BASE), values: GRID.map(() => v), dash: DASH(BASE) }]; })());
     const vl = state.mode === 'own' ? MODELS.filter(m => T(m.key)).map(m => ({ x: T(m.key).t_mean, color: COLOR(m), opacity: 0.7 })) : [{ x: state.t, color: 'var(--ink-2)' }];
     lineChart($('cc-prec'), { series: mk('P'), vlines: vl, hlines: [0.85], height: 220, title: 'precision' });
     lineChart($('cc-rec'), { series: mk('R'), vlines: vl, hlines: [0.85], height: 220, title: 'recall' });
@@ -600,6 +627,7 @@
     add([b('Source.'), ' Port of Rachel Mason’s CAFO-AI_v2 ', el('code', null, 'evaluate.py'), ' (2026-09-06) in ', el('code', null, 'training/country_metrics.py'), '; it reproduces the tables saved in her review notebooks for v9 and for round_4 arm A digit for digit.']);
     add([b('Rows.'), ' Labels and splits from ', el('code', null, 'all_clusters_' + D.labels + '.parquet'), ' (the round_5 delivery). ', fmtN(D.n_blanked), ' candidate ids that any compared model trained on are treated as unlabelled, so v9 (round_3 training) and the round_5 arms are judged on the same held-out rows. ', fmtN(D.meta.n_labelled), ' labelled rows remain, ', fmtN(D.meta.n_heldout_labelled), ' of them held out. Excluded from every table: ' + D.meta.excluded_countries.join(', ') + '.']);
     add([b('Tasks.'), ' Farm: P(farm) = 1 − P(NotFarm); positives are every Farm: * label including the ones the model cannot name; Ambiguous is outside the universe. Poultry: P(Poultry) against the specific-animal universe {NotFarm, Poultry, Pigs, Cattle}.']);
+    add([b('Labels only.'), ' The dotted grey series is what the labels say about the pipeline before any model: every candidate the building-geometry filter selected is called a farm (or poultry), so precision equals the prevalence in each country’s representative sample and recall is 1. It is the floor a model must clear, and it is what the CNN is adding on top of the geometry selection. Rachel’s older Isolation-Forest geometry score (template_score_if) cannot be shown on these rows: it exists for none of the current eval rows and for four of the nine generalization countries.']);
     add([b('Thresholds.'), ' Rule score ≥ t on np.linspace(0, 1, 200). “Own” = the first argmax of the unweighted mean per-country F1; “shared” = one t for every arm. Leave-one-out F1 scores each country at the threshold tuned on the other ten. The precision-floor threshold is the argmax restricted to t where the mean per-country precision is at least 0.8 (an asterisk means no t reaches the floor).']);
     add([b('Seeds.'), ' Round_5 has one seed per arm (44). Round_4 measured a seed sd of about 0.01 on mean per-country F1 for identical recipes, so differences of that size between arms are not evidence.']);
     add([b('Files.'), ' ', el('code', null, 'experiments/results/country_metrics/summary.md'), ' (all 24 models), per-run JSON and Rachel-style figures in the same folder; regenerate with ', el('code', null, 'python3 experiments/evaluate_country_metrics.py'), ' then ', el('code', null, 'python3 experiments/build_r5_metrics_page.py'), '. Built ' + D.generated + '.']);

@@ -1,0 +1,629 @@
+<title>Round 5 Threshold Atlas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f5f6f2;
+    --surface: #fdfdfb;
+    --surface-2: #eef0ea;
+    --ink: #12160f;
+    --ink-2: #575c51;
+    --muted: #868b7e;
+    --hair: #e1e4d9;
+    --base: #c2c6ba;
+    --accent: #2f5d4a;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(47, 93, 74, 0.10);
+    --s1: #2a78d6;  /* arm A  */
+    --s2: #eb6834;  /* arm G  */
+    --s3: #1baf7a;  /* arm H  */
+    --s4: #eda100;  /* arm I  */
+    --sref: #4b4f46; /* v9 reference */
+    --prec: #2a78d6; /* Rachel's precision blue  */
+    --rec:  #eb6834; /* Rachel's recall orange   */
+    --cell: 42, 120, 214;
+    --shadow: 0 1px 2px rgba(18, 22, 15, 0.06);
+    --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0f110e; --surface: #191c17; --surface-2: #22261f;
+      --ink: #f1f3ec; --ink-2: #bcc1b3; --muted: #8a8f82;
+      --hair: #2a2e27; --base: #3a3f36;
+      --accent: #7fc2a6; --accent-ink: #0f110e; --accent-soft: rgba(127, 194, 166, 0.14);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --sref: #c3c7bb;
+      --prec: #3987e5; --rec: #d95926; --cell: 57, 135, 229;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0f110e; --surface: #191c17; --surface-2: #22261f;
+    --ink: #f1f3ec; --ink-2: #bcc1b3; --muted: #8a8f82;
+    --hair: #2a2e27; --base: #3a3f36;
+    --accent: #7fc2a6; --accent-ink: #0f110e; --accent-soft: rgba(127, 194, 166, 0.14);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --sref: #c3c7bb;
+    --prec: #3987e5; --rec: #d95926; --cell: 57, 135, 229;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 15px/1.5 var(--sans); padding-block: 0 64px; padding-inline: 20px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  a { color: var(--accent); }
+  h1, h2, h3 { font-family: var(--serif); font-weight: 600; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(30px, 4.2vw, 42px); line-height: 1.1; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; line-height: 1.2; }
+  h3 { font-size: 16px; line-height: 1.3; font-family: var(--sans); font-weight: 600; }
+  p { margin: 0; max-width: 68ch; }
+  .eyebrow { font: 500 11.5px/1 var(--sans); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-2); }
+  .muted { color: var(--muted); }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  header.top { padding-block: 40px 20px; display: grid; gap: 14px; }
+  header.top .lede { color: var(--ink-2); max-width: 74ch; }
+  header.top .lede b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- controls ---------- */
+  .controls {
+    position: sticky; top: 0; z-index: 5; background: var(--page);
+    padding-block: 12px; border-bottom: 1px solid var(--hair); margin-bottom: 28px;
+    display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+  }
+  .ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ctl .lab { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
+  .seg { display: inline-flex; border: 1px solid var(--base); border-radius: 6px; overflow: hidden; background: var(--surface); }
+  .seg button {
+    appearance: none; border: 0; background: transparent; color: var(--ink-2); font: 500 13px var(--sans);
+    padding: 6px 11px; cursor: pointer; border-right: 1px solid var(--hair);
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+  .seg button:focus-visible, .presets button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .slider { display: flex; align-items: center; gap: 8px; }
+  .slider input[type="range"] { width: 180px; accent-color: var(--accent); }
+  .slider output { font-family: var(--mono); font-size: 13px; min-width: 4.5ch; }
+  .slider[aria-disabled="true"] { opacity: 0.45; }
+  .presets button {
+    appearance: none; border: 1px solid var(--base); background: var(--surface); color: var(--ink-2);
+    font: 500 12px var(--mono); padding: 4px 8px; border-radius: 4px; cursor: pointer;
+  }
+  .presets button:hover { background: var(--accent-soft); }
+  select {
+    font: 500 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--base);
+    border-radius: 6px; padding: 6px 28px 6px 10px;
+  }
+
+  /* ---------- sections ---------- */
+  section { margin-bottom: 44px; }
+  .sec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 18px; margin-bottom: 14px; }
+  .sec-head p { color: var(--ink-2); font-size: 13.5px; }
+  .note { font-size: 12.5px; color: var(--muted); margin-top: 10px; max-width: 80ch; }
+
+  /* arm cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; padding: 14px 16px 12px;
+    box-shadow: var(--shadow); display: grid; gap: 8px; align-content: start;
+  }
+  .card .key { display: flex; align-items: center; gap: 8px; }
+  .card .swatch { width: 22px; height: 0; border-top: 3px solid; border-radius: 2px; }
+  .card .swatch.ref { border-top-style: dashed; }
+  .card .name { font-weight: 600; font-size: 14px; }
+  .card .desc { font-size: 12px; color: var(--muted); line-height: 1.35; min-height: 2.7em; }
+  .card .big { font-size: 34px; font-weight: 600; line-height: 1; letter-spacing: -0.01em; }
+  .card .at { font-size: 12px; color: var(--ink-2); }
+  .card dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 4px 0 0; font-size: 12.5px; }
+  .card dt { color: var(--muted); }
+  .card dd { margin: 0; text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* charts */
+  .chart { position: relative; background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; padding: 10px 12px 6px; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart .tip {
+    position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--base);
+    border-radius: 6px; padding: 7px 9px; font-size: 12px; box-shadow: var(--shadow); display: none; min-width: 150px; z-index: 3;
+  }
+  .chart .tip .th { color: var(--muted); margin-bottom: 4px; font-family: var(--mono); }
+  .chart .tip .row { display: flex; align-items: center; gap: 7px; justify-content: space-between; }
+  .chart .tip .row .k { width: 14px; height: 0; border-top: 2px solid; flex: none; }
+  .chart .tip .row .v { font-family: var(--mono); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .chart .tip .row .l { color: var(--ink-2); flex: 1; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--ink-2); margin-top: 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; }
+  .legend i.dash { border-top-style: dashed; }
+  .legend i.faint { opacity: 0.45; }
+  .panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+  .panel h3 { font-size: 13px; margin-bottom: 2px; display: flex; justify-content: space-between; font-weight: 600; }
+  .panel h3 small { color: var(--muted); font-weight: 400; font-family: var(--mono); font-size: 11px; }
+  .trio { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+
+  /* tables */
+  .tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--hair); white-space: nowrap; }
+  th { font-weight: 500; color: var(--ink-2); font-size: 12px; background: var(--surface-2); position: sticky; top: 0; }
+  th:first-child, td:first-child { text-align: left; }
+  td { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td.txt, th.txt { font-family: var(--sans); }
+  tr:last-child td { border-bottom: 0; }
+  tr.total td { font-weight: 500; border-top: 1px solid var(--base); }
+  td .sub { display: block; font-size: 10.5px; color: var(--muted); line-height: 1.1; margin-top: 2px; }
+  td.best { font-weight: 600; }
+  .bar { position: relative; display: inline-block; width: 90px; height: 10px; background: var(--surface-2); border-radius: 2px; vertical-align: middle; margin-left: 8px; overflow: hidden; }
+  .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 0 2px 2px 0; }
+  .bar.fn i { background: var(--s1); }
+  tr.thin td { color: var(--muted); }
+  .scroll { max-height: 520px; overflow-y: auto; }
+  .cm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+  .cm { background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; padding: 10px 12px; }
+  .cm h3 { font-size: 13px; margin-bottom: 6px; }
+  .cm table { font-size: 12px; }
+  .cm th, .cm td { padding: 4px 8px; border: 0; }
+  .cm th { background: transparent; position: static; }
+  .cm td { text-align: center; border-radius: 3px; }
+  .cm td:first-child { text-align: left; font-family: var(--sans); color: var(--ink-2); }
+  .cm td.hot { background: rgba(var(--cell), var(--a, 0)); }
+
+  .notes { font-size: 13.5px; color: var(--ink-2); display: grid; gap: 8px; max-width: 80ch; }
+  .notes b { color: var(--ink); font-weight: 600; }
+  code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 3px; }
+  @media (prefers-reduced-motion: no-preference) { .seg button, .presets button { transition: background 120ms; } }
+  @media (max-width: 560px) { .slider input[type="range"] { width: 130px; } header.top { padding-block: 26px 14px; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="eyebrow">Round 5 · geographic balancing · seed 44 · Rachel's per-country threshold metrics</div>
+    <h1>Round 5 Threshold Atlas</h1>
+    <p class="lede">Every number here is computed the way Rachel evaluates a delivered model: precision and recall as a
+      function of threshold, per country, and precision / recall / F1 at one global threshold per model. The four
+      round_5 arms are scored beside archived <b>v9</b> on identical rows of the round_5 label file that
+      <b>none of the models trained on</b> (focal countries on <code>eval</code>, generalization countries on
+      <code>generalization</code>; IDN, MOZ and PER excluded). Move the threshold and every table follows.</p>
+  </header>
+
+  <div class="controls" role="region" aria-label="Filters">
+    <div class="ctl"><span class="lab">Task</span>
+      <div class="seg" id="task-seg" role="group" aria-label="Task">
+        <button type="button" id="task-farm" data-task="farm" aria-pressed="true">Farm vs not-farm</button>
+        <button type="button" id="task-poultry" data-task="poultry" aria-pressed="false">Poultry vs rest</button>
+      </div>
+    </div>
+    <div class="ctl"><span class="lab">Threshold</span>
+      <div class="seg" id="mode-seg" role="group" aria-label="Threshold mode">
+        <button type="button" id="mode-own" data-mode="own" aria-pressed="true">Each arm's own mean-F1 argmax</button>
+        <button type="button" id="mode-shared" data-mode="shared" aria-pressed="false">Shared</button>
+      </div>
+      <label class="slider" id="slider-wrap" aria-disabled="true">
+        <input type="range" id="t-slider" min="0" max="1" step="0.005" value="0.4" aria-label="Shared threshold">
+        <output id="t-out" for="t-slider">0.400</output>
+      </label>
+      <span class="presets" id="presets">
+        <button type="button" data-t="0.4" id="preset-04">0.4</button>
+        <button type="button" data-t="0.5" id="preset-05">0.5</button>
+        <button type="button" data-t="0.75" id="preset-075">0.75</button>
+      </span>
+    </div>
+  </div>
+
+  <section id="sec-cards">
+    <div class="sec-head">
+      <h2>Mean per-country F1 by arm</h2>
+      <p id="cards-caption"></p>
+    </div>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section id="sec-meanf1">
+    <div class="sec-head">
+      <h2>Mean per-country F1 against threshold</h2>
+      <p>Unweighted mean over the eleven countries. The dot marks each arm's argmax; the hairline is the threshold in use.</p>
+    </div>
+    <div class="chart" id="meanf1-chart"></div>
+    <div class="legend" id="meanf1-legend"></div>
+  </section>
+
+  <section id="sec-table">
+    <div class="sec-head">
+      <h2>Per-country precision, recall and F1</h2>
+      <p id="table-caption"></p>
+    </div>
+    <div class="tablewrap" id="country-table"></div>
+    <div class="note">F1 is shown large with precision · recall beneath it. Bold marks the best arm in the row (v9 excluded).
+      Counts in the tooltip of each cell (hover) are reconstructed from the curves: TP = recall × positives.</div>
+  </section>
+
+  <section id="sec-country">
+    <div class="sec-head">
+      <h2>One country, all arms</h2>
+      <div class="ctl"><span class="lab">Country</span><select id="country-select" aria-label="Country"></select></div>
+    </div>
+    <div class="trio">
+      <div class="chart" id="cc-prec"></div>
+      <div class="chart" id="cc-rec"></div>
+      <div class="chart" id="cc-f1"></div>
+    </div>
+    <div class="legend" id="cc-legend"></div>
+    <div class="note" id="cc-note"></div>
+  </section>
+
+  <section id="sec-panels">
+    <div class="sec-head">
+      <h2>Rachel's panels: precision and recall against threshold, by country</h2>
+      <div class="ctl"><span class="lab">Arm</span><div class="seg" id="arm-seg" role="group" aria-label="Arm"></div></div>
+    </div>
+    <div class="legend" id="panels-legend">
+      <span><i style="border-color: var(--prec)"></i>precision</span>
+      <span><i style="border-color: var(--rec)"></i>recall</span>
+      <span><i class="dash faint" style="border-color: var(--prec)"></i><i class="dash faint" style="border-color: var(--rec)"></i>held-out <code>test</code> split (focal countries)</span>
+      <span class="muted">dotted guides: threshold in use · 0.85</span>
+    </div>
+    <div class="panels" id="panels" style="margin-top:10px"></div>
+  </section>
+
+  <section id="sec-fpfn">
+    <div class="sec-head">
+      <h2>False-positive and false-negative rates, every labelled country</h2>
+      <p id="fpfn-caption"></p>
+    </div>
+    <div class="tablewrap scroll" id="fpfn-table"></div>
+    <div class="note">Held-out rows only (no train/val). Sorted by FP rate; rows resting on fewer than 5 labels are greyed. Computed at the selected arm's own mean-F1 threshold for the task shown.</div>
+  </section>
+
+  <section id="sec-cm">
+    <div class="sec-head">
+      <h2>Poultry gate on the focal <code>eval</code> splits</h2>
+      <p id="cm-caption"></p>
+    </div>
+    <div class="cm-grid" id="cm-grid"></div>
+    <div class="note">Rows are the true class, columns whether P(Poultry) clears the arm's own poultry threshold. What the gate lets through from NotFarm and Pigs is the false-positive mixture Rachel noted.</div>
+  </section>
+
+  <section id="sec-vs">
+    <div class="sec-head">
+      <h2>What changes on the map against v9</h2>
+      <p>Held-out labelled farms and NotFarm rows, then the unlabelled rest of the world. Lost = flagged by v9 only; rescued = flagged by the arm only.</p>
+    </div>
+    <h3 style="margin-bottom:8px">Each model at its own mean-F1 threshold</h3>
+    <div class="tablewrap" id="vs-own"></div>
+    <h3 style="margin:18px 0 8px">Both models at t = 0.4</h3>
+    <div class="tablewrap" id="vs-04"></div>
+  </section>
+
+  <section id="sec-headline">
+    <div class="sec-head">
+      <h2>Headline counts, full world</h2>
+      <p>How many of the 154,908 scored candidates clear each arm's own thresholds.</p>
+    </div>
+    <div class="tablewrap" id="headline-table"></div>
+  </section>
+
+  <section id="sec-comp">
+    <div class="sec-head">
+      <h2>What the evaluation rows contain</h2>
+      <p>Reference rows after removing anything a compared model trained on.</p>
+    </div>
+    <div class="tablewrap" id="comp-table"></div>
+  </section>
+
+  <section id="sec-notes">
+    <div class="sec-head"><h2>Method and provenance</h2></div>
+    <div class="notes" id="notes"></div>
+  </section>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const D = /*__DATA__*/;
+  const GRID = D.grid, N = GRID.length;
+  const MODELS = D.models;
+  const ARMS = MODELS.filter(m => m.slot !== 'ref');
+  const COLOR = m => m.slot === 'ref' ? 'var(--sref)' : 'var(--s' + m.slot + ')';
+  const state = { task: 'farm', mode: 'own', t: 0.4, country: 'ALB', arm: 'h' };
+  const $ = id => document.getElementById(id);
+  const fmt3 = x => (x == null || isNaN(x)) ? '–' : x.toFixed(3);
+  const fmt2 = x => (x == null || isNaN(x)) ? '–' : x.toFixed(2);
+  const fmtN = x => (x == null) ? '–' : Number(x).toLocaleString('en-US');
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const svgEl = (tag, attrs) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+
+  // ---------- data access ----------
+  const T = key => D.tasks[state.task][key];
+  const idxOf = t => Math.max(0, Math.min(N - 1, Math.round(t * (N - 1))));
+  const tOf = key => state.mode === 'own' ? T(key).t_mean : state.t;
+  const repSplit = cv => cv.eval ? 'eval' : (cv.generalization ? 'generalization' : null);
+  function metricsAt(c, i) {
+    const P = c.P[i], R = c.R[i];
+    const f1 = (P + R) > 0 ? 2 * P * R / (P + R) : 0;
+    const tp = Math.round(R * c.n_pos);
+    const fp = P > 0 ? Math.max(0, Math.round(tp / P - tp)) : (tp === 0 ? null : 0);
+    return { P, R, f1, tp, fp, fn: c.n_pos - tp, n: c.n, n_pos: c.n_pos };
+  }
+  function perCountry(key) {
+    const t = T(key); if (!t) return [];
+    const i = idxOf(tOf(key));
+    return t.countries.map(c => { const cv = t.curves[c]; const sp = repSplit(cv); return Object.assign({ country: c, split: sp }, metricsAt(cv[sp], i)); });
+  }
+  function summarise(rows) {
+    if (!rows.length) return null;
+    const mean = k => rows.reduce((s, r) => s + r[k], 0) / rows.length;
+    const worst = rows.reduce((a, b) => b.f1 < a.f1 ? b : a);
+    return { f1: mean('f1'), P: mean('P'), R: mean('R'), worst };
+  }
+
+  // ---------- generic line chart ----------
+  function lineChart(container, opts) {
+    container.textContent = '';
+    const W = Math.max(240, container.clientWidth - 24), H = opts.height || 240;
+    const m = { t: 10, r: 12, b: 26, l: 34 };
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const xs = t => m.l + t * iw, ys = v => m.t + (1 - v) * ih;
+    const svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': opts.title || 'line chart' });
+    [0, 0.25, 0.5, 0.75, 1].forEach(v => {
+      svg.appendChild(svgEl('line', { x1: m.l, x2: W - m.r, y1: ys(v), y2: ys(v), stroke: 'var(--hair)', 'stroke-width': 1 }));
+      const tx = svgEl('text', { x: m.l - 6, y: ys(v) + 3.5, 'text-anchor': 'end', 'font-size': 10, style: 'fill: var(--muted); font-family: var(--mono)' });
+      tx.textContent = v.toFixed(2).replace(/0$/, '').replace(/\.$/, ''); svg.appendChild(tx);
+    });
+    [0, 0.2, 0.4, 0.6, 0.8, 1].forEach(v => {
+      const tx = svgEl('text', { x: xs(v), y: H - 8, 'text-anchor': 'middle', 'font-size': 10, style: 'fill: var(--muted); font-family: var(--mono)' });
+      tx.textContent = v.toFixed(1); svg.appendChild(tx);
+    });
+    svg.appendChild(svgEl('line', { x1: m.l, x2: W - m.r, y1: ys(0), y2: ys(0), stroke: 'var(--base)', 'stroke-width': 1 }));
+    (opts.hlines || []).forEach(y => svg.appendChild(svgEl('line', { x1: m.l, x2: W - m.r, y1: ys(y), y2: ys(y), stroke: 'var(--base)', 'stroke-width': 1, 'stroke-dasharray': '2 4' })));
+    (opts.vlines || []).forEach(v => svg.appendChild(svgEl('line', { x1: xs(v.x), x2: xs(v.x), y1: m.t, y2: ys(0), stroke: v.color || 'var(--base)', 'stroke-width': 1, 'stroke-dasharray': '2 4', opacity: v.opacity == null ? 1 : v.opacity })));
+    opts.series.forEach(s => {
+      let d = '';
+      for (let i = 0; i < N; i++) { const v = s.values[i]; if (v == null) continue; d += (d ? 'L' : 'M') + xs(GRID[i]).toFixed(1) + ' ' + ys(Math.max(0, Math.min(1, v))).toFixed(1); }
+      const p = svgEl('path', { d, fill: 'none', stroke: s.color, 'stroke-width': s.width || 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', opacity: s.opacity == null ? 1 : s.opacity });
+      if (s.dash) p.setAttribute('stroke-dasharray', s.dash);
+      svg.appendChild(p);
+    });
+    (opts.markers || []).forEach(k => {
+      svg.appendChild(svgEl('circle', { cx: xs(k.x), cy: ys(k.y), r: 6, fill: 'var(--surface)' }));
+      svg.appendChild(svgEl('circle', { cx: xs(k.x), cy: ys(k.y), r: 4, fill: k.color }));
+    });
+    const cross = svgEl('line', { x1: 0, x2: 0, y1: m.t, y2: ys(0), stroke: 'var(--ink-2)', 'stroke-width': 1, opacity: 0 });
+    svg.appendChild(cross);
+    const hit = svgEl('rect', { x: m.l, y: m.t, width: iw, height: ih, fill: 'transparent' });
+    svg.appendChild(hit);
+    container.appendChild(svg);
+    const tip = el('div', 'tip'); container.appendChild(tip);
+    function show(evt) {
+      const rect = svg.getBoundingClientRect();
+      const px = (evt.clientX - rect.left) * (W / rect.width);
+      const t = Math.max(0, Math.min(1, (px - m.l) / iw)); const i = idxOf(t);
+      cross.setAttribute('x1', xs(GRID[i])); cross.setAttribute('x2', xs(GRID[i])); cross.setAttribute('opacity', 1);
+      tip.textContent = '';
+      tip.appendChild(el('div', 'th', 't = ' + GRID[i].toFixed(3)));
+      opts.series.filter(s => !s.noTip).forEach(s => {
+        const row = el('div', 'row'); const k = el('span', 'k'); k.style.borderColor = s.color; if (s.dash) k.style.borderTopStyle = 'dashed';
+        row.appendChild(k); row.appendChild(el('span', 'l', s.label)); row.appendChild(el('span', 'v', fmt3(s.values[i]))); tip.appendChild(row);
+      });
+      tip.style.display = 'block';
+      const cx = (evt.clientX - rect.left), left = cx > rect.width * 0.6 ? cx - tip.offsetWidth - 14 : cx + 14;
+      tip.style.left = Math.max(0, left) + 'px'; tip.style.top = Math.max(0, (evt.clientY - rect.top) - 10) + 'px';
+    }
+    hit.addEventListener('pointermove', show);
+    hit.addEventListener('pointerleave', () => { tip.style.display = 'none'; cross.setAttribute('opacity', 0); });
+  }
+  function legend(container, items) {
+    container.textContent = '';
+    items.forEach(it => { const s = el('span'); const i = el('i'); i.style.borderColor = it.color; if (it.dash) i.classList.add('dash'); if (it.faint) i.classList.add('faint'); s.appendChild(i); s.appendChild(document.createTextNode(it.label)); container.appendChild(s); });
+  }
+  const modelLegend = () => MODELS.map(m => ({ label: m.label, color: COLOR(m), dash: m.slot === 'ref' }));
+
+  // ---------- sections ----------
+  function renderCards() {
+    const box = $('cards'); box.textContent = '';
+    MODELS.forEach(m => {
+      const t = T(m.key); if (!t) return;
+      const rows = perCountry(m.key), s = summarise(rows);
+      const c = el('div', 'card');
+      const key = el('div', 'key'); const sw = el('span', 'swatch' + (m.slot === 'ref' ? ' ref' : '')); sw.style.borderColor = COLOR(m); key.appendChild(sw); key.appendChild(el('span', 'name', m.label)); c.appendChild(key);
+      c.appendChild(el('div', 'desc', m.desc));
+      c.appendChild(el('div', 'big num', fmt3(s.f1)));
+      c.appendChild(el('div', 'at', 'mean F1 at t = ' + fmt3(tOf(m.key)) + (state.mode === 'own' ? '' : ' (own argmax ' + fmt3(t.t_mean) + ')')));
+      const dl = el('dl');
+      const add = (k, v) => { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); };
+      add('mean precision', fmt3(s.P)); add('mean recall', fmt3(s.R));
+      add('weakest', s.worst.country + ' ' + fmt2(s.worst.f1));
+      add('leave-one-out F1', fmt3(t.summary_loco.mean_f1));
+      add('plateau ±0.01', t.plateau['0.01'][0].toFixed(2) + '–' + t.plateau['0.01'][1].toFixed(2));
+      add('t with mean P ≥ 0.8', fmt3(t.t_pfloor) + (t.pfloor_met ? '' : ' *'));
+      c.appendChild(dl); box.appendChild(c);
+    });
+    $('cards-caption').textContent = state.mode === 'own'
+      ? 'At each arm’s own threshold: the argmax over a 200-point grid of the unweighted mean per-country F1.'
+      : 'Every arm at the shared threshold t = ' + fmt3(state.t) + '.';
+  }
+
+  function renderMeanF1() {
+    const series = MODELS.filter(m => T(m.key)).map(m => ({ label: m.label, color: COLOR(m), values: T(m.key).mean_f1_curve, dash: m.slot === 'ref' ? '6 5' : null, width: m.slot === 'ref' ? 2 : 2 }));
+    const markers = MODELS.filter(m => T(m.key)).map(m => { const i = idxOf(T(m.key).t_mean); return { x: GRID[i], y: T(m.key).mean_f1_curve[i], color: COLOR(m) }; });
+    const vl = state.mode === 'own' ? [] : [{ x: state.t, color: 'var(--ink-2)' }];
+    lineChart($('meanf1-chart'), { series, markers, vlines: vl, height: 280, title: 'mean per-country F1 vs threshold' });
+    legend($('meanf1-legend'), modelLegend());
+  }
+
+  function renderTable() {
+    const wrap = $('country-table'); wrap.textContent = '';
+    const models = MODELS.filter(m => T(m.key));
+    const rowsBy = {}; models.forEach(m => { rowsBy[m.key] = perCountry(m.key); });
+    const countries = T(models[0].key).countries;
+    const table = el('table'); const thead = el('thead'); const hr = el('tr');
+    hr.appendChild(el('th', 'txt', 'country')); hr.appendChild(el('th', 'txt', 'split')); hr.appendChild(el('th', null, 'n · pos'));
+    models.forEach(m => { const th = el('th', 'txt'); const i = el('i'); i.style.cssText = 'display:inline-block;width:12px;border-top:2px solid ' + COLOR(m) + (m.slot === 'ref' ? ';border-top-style:dashed' : '') + ';margin-right:6px;vertical-align:middle'; th.appendChild(i); th.appendChild(document.createTextNode(m.label)); hr.appendChild(th); });
+    thead.appendChild(hr); table.appendChild(thead);
+    const tb = el('tbody');
+    countries.forEach((c, ci) => {
+      const tr = el('tr'); tr.appendChild(el('td', 'txt', c));
+      const r0 = rowsBy[models[0].key][ci];
+      tr.appendChild(el('td', 'txt', r0.split)); tr.appendChild(el('td', null, r0.n + ' · ' + r0.n_pos));
+      const best = Math.max.apply(null, ARMS.filter(a => rowsBy[a.key]).map(a => rowsBy[a.key][ci].f1));
+      models.forEach(m => {
+        const r = rowsBy[m.key][ci]; const td = el('td'); td.textContent = fmt2(r.f1);
+        const sub = el('span', 'sub', fmt2(r.P) + ' · ' + fmt2(r.R)); td.appendChild(sub);
+        if (m.slot !== 'ref' && Math.abs(r.f1 - best) < 1e-9) td.classList.add('best');
+        td.style.background = 'rgba(var(--cell), ' + Math.max(0, Math.min(0.32, (r.f1 - 0.45) / 0.55 * 0.32)).toFixed(3) + ')';
+        td.title = m.label + ' · ' + c + ' at t = ' + fmt3(tOf(m.key)) + '\nTP ' + r.tp + ' · FP ' + (r.fp == null ? '?' : r.fp) + ' · FN ' + r.fn + ' of ' + r.n + ' rows (' + r.n_pos + ' positives)';
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+    const tot = el('tr', 'total'); tot.appendChild(el('td', 'txt', 'mean of countries')); tot.appendChild(el('td', 'txt', '')); tot.appendChild(el('td', null, ''));
+    models.forEach(m => { const s = summarise(rowsBy[m.key]); const td = el('td', null, fmt3(s.f1)); td.appendChild(el('span', 'sub', fmt2(s.P) + ' · ' + fmt2(s.R))); tot.appendChild(td); });
+    tb.appendChild(tot); table.appendChild(tb); wrap.appendChild(table);
+    $('table-caption').textContent = (state.task === 'farm' ? 'Farm vs not-farm' : 'Poultry vs rest') + ' · ' + (state.mode === 'own' ? 'each arm at its own argmax' : 'shared t = ' + fmt3(state.t)) + ' · focal countries on eval, generalization countries on generalization.';
+  }
+
+  function renderCountry() {
+    const sel = $('country-select'); const first = MODELS.find(m => T(m.key)); const countries = T(first.key).countries;
+    if (sel.options.length !== countries.length) { sel.textContent = ''; countries.forEach(c => { const o = el('option', null, c); o.value = c; sel.appendChild(o); }); }
+    if (!countries.includes(state.country)) state.country = countries[0];
+    sel.value = state.country;
+    const cv0 = T(first.key).curves[state.country]; const sp = repSplit(cv0);
+    const mk = (which) => MODELS.filter(m => T(m.key) && T(m.key).curves[state.country]).map(m => {
+      const c = T(m.key).curves[state.country][sp]; let vals;
+      if (which === 'P') vals = c.P; else if (which === 'R') vals = c.R; else vals = c.P.map((p, i) => (p + c.R[i]) > 0 ? 2 * p * c.R[i] / (p + c.R[i]) : 0);
+      return { label: m.label, color: COLOR(m), values: vals, dash: m.slot === 'ref' ? '6 5' : null };
+    });
+    const vl = state.mode === 'own' ? MODELS.filter(m => T(m.key)).map(m => ({ x: T(m.key).t_mean, color: COLOR(m), opacity: 0.7 })) : [{ x: state.t, color: 'var(--ink-2)' }];
+    lineChart($('cc-prec'), { series: mk('P'), vlines: vl, hlines: [0.85], height: 220, title: 'precision' });
+    lineChart($('cc-rec'), { series: mk('R'), vlines: vl, hlines: [0.85], height: 220, title: 'recall' });
+    lineChart($('cc-f1'), { series: mk('F'), vlines: vl, height: 220, title: 'F1' });
+    ['cc-prec', 'cc-rec', 'cc-f1'].forEach((id, k) => { const h = el('div', 'eyebrow', ['precision', 'recall', 'F1'][k]); h.style.marginBottom = '4px'; $(id).insertBefore(h, $(id).firstChild); });
+    legend($('cc-legend'), modelLegend());
+    $('cc-note').textContent = state.country + ' · ' + sp + ' split · ' + cv0[sp].n + ' rows, ' + cv0[sp].n_pos + ' positives (' + (100 * cv0[sp].n_pos / cv0[sp].n).toFixed(0) + '% prevalence). Dotted verticals: ' + (state.mode === 'own' ? 'each arm’s own argmax' : 'the shared threshold') + '; dotted horizontal: 0.85.';
+  }
+
+  function renderArmSeg() {
+    const seg = $('arm-seg'); seg.textContent = '';
+    MODELS.forEach(m => { const b = el('button', null, m.label); b.type = 'button'; b.id = 'arm-' + m.key; b.setAttribute('aria-pressed', String(m.key === state.arm)); b.addEventListener('click', () => { state.arm = m.key; renderArmSeg(); renderPanels(); renderFpFn(); renderCm(); }); seg.appendChild(b); });
+  }
+  function renderPanels() {
+    const box = $('panels'); box.textContent = '';
+    const t = T(state.arm); if (!t) return;
+    const tUsed = tOf(state.arm);
+    t.countries.forEach(c => {
+      const cv = t.curves[c]; const sp = repSplit(cv);
+      const panel = el('div', 'panel'); const h = el('h3'); h.appendChild(document.createTextNode(c)); const sm = el('small', null, sp + ' n=' + cv[sp].n + ' pos=' + cv[sp].n_pos); h.appendChild(sm); panel.appendChild(h);
+      const chart = el('div', 'chart'); panel.appendChild(chart); box.appendChild(panel);
+      const series = [{ label: 'precision', color: 'var(--prec)', values: cv[sp].P }, { label: 'recall', color: 'var(--rec)', values: cv[sp].R }];
+      if (cv.test) { series.push({ label: 'precision (test)', color: 'var(--prec)', values: cv.test.P, dash: '4 4', opacity: 0.45, width: 1.5 }); series.push({ label: 'recall (test)', color: 'var(--rec)', values: cv.test.R, dash: '4 4', opacity: 0.45, width: 1.5 }); }
+      lineChart(chart, { series, vlines: [{ x: tUsed, color: 'var(--ink-2)' }], hlines: [0.85], height: 170, title: c + ' precision and recall vs threshold' });
+    });
+  }
+
+  function renderFpFn() {
+    const wrap = $('fpfn-table'); wrap.textContent = '';
+    const t = T(state.arm); if (!t) return;
+    const rows = t.fp_fn_heldout.filter(r => r.country !== 'TOTAL' && (r.n_neg > 0 || r.n_pos > 0)).slice().sort((a, b) => ((b.FP_rate == null ? -1 : b.FP_rate) - (a.FP_rate == null ? -1 : a.FP_rate)) || (b.n_neg - a.n_neg));
+    const total = t.fp_fn_heldout.find(r => r.country === 'TOTAL');
+    const table = el('table'); const hr = el('tr');
+    ['country', 'NotFarm rows', 'FP', 'FP rate', 'farm rows', 'FN', 'FN rate'].forEach((h, i) => hr.appendChild(el('th', i === 0 ? 'txt' : null, h)));
+    const thead = el('thead'); thead.appendChild(hr); table.appendChild(thead); const tb = el('tbody');
+    const bar = (v, cls) => { const b = el('span', 'bar' + (cls ? ' ' + cls : '')); const i = el('i'); i.style.width = (100 * (v || 0)).toFixed(1) + '%'; b.appendChild(i); return b; };
+    const line = (r, isTotal) => {
+      const tr = el('tr' , isTotal ? 'total' : ((r.n_neg < 5 && r.n_pos < 5) ? 'thin' : null));
+      tr.appendChild(el('td', 'txt', r.country)); tr.appendChild(el('td', null, fmtN(r.n_neg))); tr.appendChild(el('td', null, fmtN(r.FP)));
+      let td = el('td', null, r.FP_rate == null ? '–' : fmt2(r.FP_rate)); if (r.FP_rate != null) td.appendChild(bar(r.FP_rate)); tr.appendChild(td);
+      tr.appendChild(el('td', null, fmtN(r.n_pos))); tr.appendChild(el('td', null, fmtN(r.FN)));
+      td = el('td', null, r.FN_rate == null ? '–' : fmt2(r.FN_rate)); if (r.FN_rate != null) td.appendChild(bar(r.FN_rate, 'fn')); tr.appendChild(td);
+      return tr;
+    };
+    if (total) tb.appendChild(line(total, true));
+    rows.forEach(r => tb.appendChild(line(r, false)));
+    table.appendChild(tb); wrap.appendChild(table);
+    const m = MODELS.find(x => x.key === state.arm);
+    $('fpfn-caption').textContent = m.label + ' · ' + (state.task === 'farm' ? 'farm gate' : 'poultry gate') + ' at its own threshold t = ' + fmt3(t.t_mean) + ' · ' + rows.length + ' countries with held-out labels.';
+  }
+
+  function renderCm() {
+    const box = $('cm-grid'); box.textContent = '';
+    const p = D.tasks.poultry[state.arm]; const m = MODELS.find(x => x.key === state.arm);
+    if (!p || !p.confusion_eval) { $('cm-caption').textContent = 'No poultry confusion available for ' + m.label + '.'; return; }
+    $('cm-caption').textContent = m.label + ' · poultry threshold ' + fmt3(p.t_mean) + ' (its own mean-F1 argmax).';
+    Object.keys(p.confusion_eval).forEach(c => {
+      const cm = p.confusion_eval[c]; if (!cm.n) return;
+      const card = el('div', 'cm'); const h = el('h3'); h.appendChild(document.createTextNode(c + ' ')); const sm = el('small', 'muted', 'n=' + cm.n); sm.style.fontWeight = 400; h.appendChild(sm); card.appendChild(h);
+      const table = el('table'); const hr = el('tr'); hr.appendChild(el('th', 'txt', '')); cm.cols.forEach(col => hr.appendChild(el('th', null, col))); table.appendChild(hr);
+      const mx = Math.max.apply(null, cm.matrix.flat());
+      cm.rows.forEach((r, i) => { const tr = el('tr'); tr.appendChild(el('td', null, r)); cm.matrix[i].forEach(v => { const td = el('td', 'hot', String(v)); td.style.setProperty('--a', (mx ? 0.06 + 0.5 * v / mx : 0).toFixed(3)); tr.appendChild(td); }); table.appendChild(tr); });
+      card.appendChild(table); box.appendChild(card);
+    });
+  }
+
+  function renderVs() {
+    const cols = ['t v9 / t run', 'farms n', 'caught v9', 'caught run', 'lost', 'rescued', 'NotFarm n', 'flagged v9', 'flagged run', 'unlab. flagged v9', 'unlab. flagged run', 'unlab. lost', 'unlab. rescued', 'unlab. Jaccard'];
+    const heads = ['arm', 'thresholds v9 / arm', 'held-out farms', 'caught by v9', 'caught by arm', 'lost', 'rescued', 'held-out NotFarm', 'flagged by v9', 'flagged by arm', 'unlabelled flagged by v9', 'by arm', 'lost', 'rescued', 'Jaccard'];
+    [['vs-own', 'own'], ['vs-04', '0.4']].forEach(([id, mode]) => {
+      const wrap = $(id); wrap.textContent = ''; const table = el('table'); const hr = el('tr'); heads.forEach((h, i) => hr.appendChild(el('th', i === 0 ? 'txt' : null, h))); const th = el('thead'); th.appendChild(hr); table.appendChild(th);
+      const tb = el('tbody');
+      ARMS.forEach(m => { const v = (D.vs_v9[m.key] || {})[mode]; if (!v) return; const tr = el('tr'); tr.appendChild(el('td', 'txt', m.label)); cols.forEach(c => tr.appendChild(el('td', null, typeof v[c] === 'number' ? fmtN(v[c]) : String(v[c])))); tb.appendChild(tr); });
+      table.appendChild(tb); wrap.appendChild(table);
+    });
+  }
+
+  function renderHeadline() {
+    const wrap = $('headline-table'); wrap.textContent = ''; const table = el('table'); const hr = el('tr');
+    ['arm', 'farm t', 'candidates ≥ farm t', 'of which unlabelled', 'poultry t', 'candidates ≥ poultry t', 'of which unlabelled'].forEach((h, i) => hr.appendChild(el('th', i === 0 ? 'txt' : null, h)));
+    const th = el('thead'); th.appendChild(hr); table.appendChild(th); const tb = el('tbody');
+    MODELS.forEach(m => { const h = (D.tasks.farm[m.key] || {}).headline; if (!h) return; const tr = el('tr'); tr.appendChild(el('td', 'txt', m.label));
+      [fmt3(h.farm_threshold), fmtN(h.n_farm_above), fmtN(h.n_unlabelled_farm_above), fmt3(h.poultry_threshold), fmtN(h.n_poultry_above), fmtN(h.n_unlabelled_poultry_above)].forEach(v => tr.appendChild(el('td', null, v))); tb.appendChild(tr); });
+    table.appendChild(tb); wrap.appendChild(table);
+  }
+
+  function renderComp() {
+    const wrap = $('comp-table'); wrap.textContent = ''; const table = el('table'); const hr = el('tr');
+    ['country', 'split', 'labelled', 'ambiguous', 'farm-task rows', 'farm positives', 'generic farm', 'poultry-task rows', 'poultry positives'].forEach((h, i) => hr.appendChild(el('th', i < 2 ? 'txt' : null, h)));
+    const th = el('thead'); th.appendChild(hr); table.appendChild(th); const tb = el('tbody');
+    D.composition.forEach(r => { const tr = el('tr'); tr.appendChild(el('td', 'txt', r.country)); tr.appendChild(el('td', 'txt', r.split)); [r.n_labelled, r.n_ambiguous, r.n_farm_task, r.n_farm_pos, r.n_generic_farm, r.n_poultry_task, r.n_poultry_pos].forEach(v => tr.appendChild(el('td', null, fmtN(v)))); tb.appendChild(tr); });
+    table.appendChild(tb); wrap.appendChild(table);
+  }
+
+  function renderNotes() {
+    const box = $('notes'); box.textContent = '';
+    const add = (html) => { const p = el('p'); p.append(...html); box.appendChild(p); };
+    const b = t => { const e = el('b', null, t); return e; };
+    add([b('Source.'), ' Port of Rachel Mason’s CAFO-AI_v2 ', el('code', null, 'evaluate.py'), ' (2026-09-06) in ', el('code', null, 'training/country_metrics.py'), '; it reproduces the tables saved in her review notebooks for v9 and for round_4 arm A digit for digit.']);
+    add([b('Rows.'), ' Labels and splits from ', el('code', null, 'all_clusters_' + D.labels + '.parquet'), ' (the round_5 delivery). ', fmtN(D.n_blanked), ' candidate ids that any compared model trained on are treated as unlabelled, so v9 (round_3 training) and the round_5 arms are judged on the same held-out rows. ', fmtN(D.meta.n_labelled), ' labelled rows remain, ', fmtN(D.meta.n_heldout_labelled), ' of them held out. Excluded from every table: ' + D.meta.excluded_countries.join(', ') + '.']);
+    add([b('Tasks.'), ' Farm: P(farm) = 1 − P(NotFarm); positives are every Farm: * label including the ones the model cannot name; Ambiguous is outside the universe. Poultry: P(Poultry) against the specific-animal universe {NotFarm, Poultry, Pigs, Cattle}.']);
+    add([b('Thresholds.'), ' Rule score ≥ t on np.linspace(0, 1, 200). “Own” = the first argmax of the unweighted mean per-country F1; “shared” = one t for every arm. Leave-one-out F1 scores each country at the threshold tuned on the other ten. The precision-floor threshold is the argmax restricted to t where the mean per-country precision is at least 0.8 (an asterisk means no t reaches the floor).']);
+    add([b('Seeds.'), ' Round_5 has one seed per arm (44). Round_4 measured a seed sd of about 0.01 on mean per-country F1 for identical recipes, so differences of that size between arms are not evidence.']);
+    add([b('Files.'), ' ', el('code', null, 'experiments/results/country_metrics/summary.md'), ' (all 24 models), per-run JSON and Rachel-style figures in the same folder; regenerate with ', el('code', null, 'python3 experiments/evaluate_country_metrics.py'), ' then ', el('code', null, 'python3 experiments/build_r5_metrics_page.py'), '. Built ' + D.generated + '.']);
+  }
+
+  // ---------- wiring ----------
+  function renderAll() { renderCards(); renderMeanF1(); renderTable(); renderCountry(); renderPanels(); renderFpFn(); renderCm(); }
+  function setMode(mode) {
+    state.mode = mode;
+    $('mode-own').setAttribute('aria-pressed', String(mode === 'own')); $('mode-shared').setAttribute('aria-pressed', String(mode === 'shared'));
+    $('slider-wrap').setAttribute('aria-disabled', String(mode !== 'shared')); $('t-slider').disabled = mode !== 'shared';
+    renderAll();
+  }
+  $('task-farm').addEventListener('click', () => { state.task = 'farm'; $('task-farm').setAttribute('aria-pressed', 'true'); $('task-poultry').setAttribute('aria-pressed', 'false'); renderAll(); });
+  $('task-poultry').addEventListener('click', () => { state.task = 'poultry'; $('task-farm').setAttribute('aria-pressed', 'false'); $('task-poultry').setAttribute('aria-pressed', 'true'); renderAll(); });
+  $('mode-own').addEventListener('click', () => setMode('own'));
+  $('mode-shared').addEventListener('click', () => setMode('shared'));
+  $('t-slider').addEventListener('input', e => { state.t = parseFloat(e.target.value); $('t-out').value = state.t.toFixed(3); renderCards(); renderMeanF1(); renderTable(); renderCountry(); renderPanels(); });
+  document.querySelectorAll('#presets button').forEach(b => b.addEventListener('click', () => { state.t = parseFloat(b.dataset.t); $('t-slider').value = state.t; $('t-out').value = state.t.toFixed(3); setMode('shared'); }));
+  $('country-select').addEventListener('change', e => { state.country = e.target.value; renderCountry(); });
+  let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { renderMeanF1(); renderCountry(); renderPanels(); }, 150); });
+
+  $('t-slider').disabled = true;
+  renderArmSeg(); renderAll(); renderVs(); renderHeadline(); renderComp(); renderNotes();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { renderMeanF1(); renderCountry(); renderPanels(); });
+})();
+</script>

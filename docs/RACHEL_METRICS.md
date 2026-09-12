@@ -121,6 +121,71 @@ judged on identical rows none of them saw:
 `--own-splits` scores each run on its own embedded labels instead (what the
 pipeline file contains); `--labels v10` switches the reference.
 
+### 3.1 Cross-check against her own saved outputs
+
+Her four review notebooks were saved with outputs (2026-09-06). Matching their
+headline counts against our scored parquets identifies which model each one
+evaluated, and running our port on the same rows without blanking
+(`--no-blank --labels v11`) reproduces her tables exactly:
+
+| her notebook | model (her name) | our model | her farm t (mean / pooled) | ours | her poultry t | ours | her headline | ours |
+|---|---|---|---|---|---|---|---|---|
+| 05_review-1 | `model_v10_run6` | archived v6 | 0.623 / 0.905 | 0.623 / 0.905 | 0.090 | 0.090† | 116,485 farm ≥ t | 116,485 |
+| 05_review-2 | `model_v10_run7` | archived v7 | 0.010 / 0.077 | — | 0.010 | — | 128,142 | — |
+| 05_review-3 | `model_v10_run9` | archived v9 | 0.231 / 0.223 | 0.231 / 0.223 | 0.201 | 0.201 | 116,447 farm, 108,080 poultry | 116,447, 108,084 |
+| 05_review-4 | (unnamed) | **round_4 arm A, seed 44** | 0.101 / 0.209 | 0.101 / 0.209 | 0.070 | 0.070 | 118,693 farm, 113,473 poultry | 118,699, 113,473 |
+
+† v6 was checked on the blanked rows only; v7 is not in our archive. For v9 and
+r4_a_s44 every one of the 22 per-country precision / recall / F1 rows in her
+tables (farm and poultry) is identical to ours to the two decimals she prints;
+the headline counts differ by 4–6 clusters of 154,908, which is float rounding
+in the CSV she received. So the numbers in this document are her numbers.
+
+Two things the cross-check makes visible:
+
+* **Her most recent review (notebook 4) is of round_4 arm A seed 44**, one
+  of the 18 round_4 runs published to the site, not v9 and not the arm the
+  AUC campaign would pick. Its per-country farm table under her method is
+  USA 0.94 · BRA 0.97 · CHL 0.93 · MEX 0.93 · THA 0.90 · BGD 0.93 · IND 0.82 ·
+  MAR 0.89 · NGA 0.88 · COD 0.85 · ALB 0.44, against v9's 0.95 · 0.96 · 0.93 ·
+  0.95 · 0.90 · 0.92 · 0.80 · 0.92 · 0.88 · 0.79 · 0.65.
+* **Her eval rows are not all held out from the models she scores them on.**
+  Her notebooks overlay the current split files onto an older model's CSV
+  (`hack_gen_country_info`), and round_5 moved rows between splits. Of the
+  663 `eval` rows in the current files, 87 were in v9's training set and the
+  same 87 in every round_4 run's; of the 949 `generalization` rows, 32 (v9)
+  and 38 (round_4) were. This is why the cross-run tables in §4 blank those
+  rows; on the blanked rows v9's mean farm F1 is 0.879 vs 0.878 unblanked,
+  i.e. the leak is small, but it is there.
+
+### 3.2 What her precision/recall-vs-threshold panels show
+
+Reading her saved figures for v9 and for r4_a_s44 (and ours, which are
+identical):
+
+* **Focal countries, farm.** Precision is flat at 0.85–0.95 across almost the
+  whole threshold range and recall stays above 0.95 until t ≈ 0.7 (USA, CHL,
+  MEX) or ≈ 0.5 (BRA, THA). This is the "quite flat" she noted, and it is why
+  the argmax is nearly arbitrary: any t between 0.05 and 0.6 gives the same
+  table to two decimals.
+* **Generalization countries, farm.** BGD, MAR and NGA have precision ≥ 0.9
+  everywhere with recall decaying roughly linearly with t, so a low threshold
+  is right for them. IND has a precision *ceiling* of ~0.75 at every
+  threshold for every model, which no threshold fixes (either the labels or
+  the imagery there confuses farms with something else). COD is noisy (45
+  rows). ALB's precision never exceeds 0.6 below t ≈ 0.85 for v9, and for
+  r4_a_s44 it climbs steadily from 0.15 to 0.7 with no plateau at all, so ALB
+  alone would want a threshold near 0.9.
+* **Poultry.** The curves are not flat: precision and recall cross at t ≈ 0.4–0.6
+  in BRA, CHL and MEX, and THA's poultry precision never reaches 0.85. The
+  poultry gate therefore has to be high and costs recall, exactly her point
+  that farm-type should be withheld rather than guessed.
+* **Her FP/FN-rate bar chart** pools every labelled row, train included, so the
+  trained-on countries sit at ~0 and the chart mostly ranks inference
+  countries with a handful of labels. Ours restricts it to held-out rows
+  (`fp_fn_heldout`), which is the honest version for judging a model; hers
+  remains the right view for choosing which countries to review next.
+
 ## 4. Results
 
 Eleven countries; reference rows after blanking (farm-task rows / farm
@@ -245,6 +310,8 @@ python3 experiments/evaluate_country_metrics.py
 # tables only; or one run; or each run on its own labels
 python3 experiments/evaluate_country_metrics.py --no-plots --runs r5_
 python3 experiments/evaluate_country_metrics.py --own-splits
+# reproduce one of her notebooks exactly (current labels, nothing blanked; not leakage-safe)
+python3 experiments/evaluate_country_metrics.py --no-blank --runs v9 --out /tmp/repro
 ```
 
 On a pod every scoring run now leaves `country_threshold_metrics.json` beside

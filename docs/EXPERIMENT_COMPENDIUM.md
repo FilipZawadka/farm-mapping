@@ -562,7 +562,8 @@ model differently, in her CAFO-AI_v2 notebooks: precision and recall *vs thresho
 per country (focal on `eval`, generalization on `generalization`, IDN/MOZ/PER held
 out), then precision / recall / F1 at one global threshold chosen to maximise the
 unweighted mean per-country F1. That evaluation was ported one-for-one
-(`training/country_metrics.py`, verified identical to her code), wired into the
+(`training/country_metrics.py`; it reproduces the tables saved in her notebooks
+for v9 and for round_4 arm A seed 44 digit for digit), wired into the
 scoring step of the pipeline, and run over all 24 models — archived v6 and v9, the
 18 round_4 runs and the 4 round_5 runs — on identical rows of the round_5 label
 file that none of them trained on.

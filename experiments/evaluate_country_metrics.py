@@ -140,6 +140,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--labels", default="v11", choices=sorted(LABEL_FILES))
     ap.add_argument("--own-splits", action="store_true", help="score each run on its own embedded labels")
+    ap.add_argument("--no-blank", action="store_true",
+                    help="use the reference labels as they are, without blanking rows a run trained on "
+                         "(reproduces Rachel's notebooks exactly; NOT leakage-safe)")
     ap.add_argument("--no-plots", action="store_true")
     ap.add_argument("--runs", nargs="*", help="substrings; default = every collected round run + archived v6/v9")
     ap.add_argument("--out", default=str(OUT))
@@ -162,7 +165,17 @@ def main() -> None:
 
     scores = {name: load_scores(p) for name, p in runs.items()}
     trained = set()
-    if not args.own_splits:
+    if args.no_blank:
+        overlap = {}
+        lab = ref[ref["final_label"].notna()]
+        for name, s in scores.items():
+            tr = set(s.loc[s["own_split"].isin(cm.TRAIN_SPLITS), "cluster_id"])
+            hit = lab[lab["cluster_id"].isin(tr)]["cnn_split_assigned"].value_counts()
+            overlap[name] = {sp: int(hit.get(sp, 0)) for sp in ("eval", "generalization", "test", "qual_eval")}
+        print("\n--no-blank: reference rows kept even where a run trained on them (leakage per run):")
+        for name, o in overlap.items():
+            print(f"  {name:<34} " + "  ".join(f"{k}={v}" for k, v in o.items()))
+    elif not args.own_splits:
         for s in scores.values():
             trained |= set(s.loc[s["own_split"].isin(cm.TRAIN_SPLITS), "cluster_id"])
         lab = ref[ref["final_label"].notna()]

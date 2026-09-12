@@ -206,3 +206,30 @@ in-domain data by 73%, so ranking on them would reward memorising the focal coun
 (check the per-country table), or if the winner is materially worse calibrated
 (ECE gap > 0.05) while the site presents scores as probabilities. Either case gets
 escalated to the user with the table rather than resolved silently.
+
+## Secondary endpoint added 2026-09-12: Rachel's per-country threshold metrics
+
+Rachel evaluates each delivered model with a different instrument from the AUC
+used above: precision and recall vs threshold per country, and precision / recall /
+F1 at one global threshold that maximises the unweighted mean per-country F1
+(focal countries on `eval`, generalization countries on `generalization`;
+IDN / MOZ / PER excluded). Her code (`CAFO-AI_v2/evaluate.py`, 2026-09-06) is ported
+in `training/country_metrics.py` and verified identical; `experiments/
+evaluate_country_metrics.py` applies it to every collected run on common rows that
+no evaluated run trained on. It is **secondary and descriptive**: it does not
+change the primary criterion or the decision procedure above, for two reasons
+established when it was run (`docs/RACHEL_METRICS.md` §5).
+
+* The threshold it selects is tuned on the rows it is scored on and, on eval sets
+  that are 70–90 % positive, sits at 0.01–0.23 with a seed-to-seed spread of up
+  to 0.15. Comparing models at their own argmax therefore compares two things at
+  once; the report carries a leave-one-country-out variant and fixed-threshold
+  values (0.4, 0.5, 0.75) so the recipe effect can be read separately.
+* Its per-country F1 has no seed model of its own; where it is used to compare
+  arms, the seed sd printed in `summary.md` (≈ 0.01 mean F1 on three seeds) plays
+  the role σ_seed plays for AUC, and the same "one seed is not a result" rule applies.
+
+What it adds that AUC cannot: the per-country operating picture (Albania is the
+only country that separates models), the recall cost of a precision floor for the
+poultry gate, and the map-level consequence of a model swap (farms lost / rescued,
+Jaccard of flagged clusters vs v9).

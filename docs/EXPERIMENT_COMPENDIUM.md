@@ -553,3 +553,42 @@ recorded as launched. Each is the kind of error that produces a confident wrong
 answer rather than a crash, which is why every arm's `sampling_report.json` was
 checked individually before results were read.
 
+## Part 9 — Rachel's evaluation view: per-country precision/recall at one global threshold
+
+Full report: `docs/RACHEL_METRICS.md`; tables `experiments/results/country_metrics/summary.md`.
+
+**Why it was run.** Every verdict above is a ROC-AUC. Rachel judges each delivered
+model differently, in her CAFO-AI_v2 notebooks: precision and recall *vs threshold*
+per country (focal on `eval`, generalization on `generalization`, IDN/MOZ/PER held
+out), then precision / recall / F1 at one global threshold chosen to maximise the
+unweighted mean per-country F1. That evaluation was ported one-for-one
+(`training/country_metrics.py`, verified identical to her code), wired into the
+scoring step of the pipeline, and run over all 24 models — archived v6 and v9, the
+18 round_4 runs and the 4 round_5 runs — on identical rows of the round_5 label
+file that none of them trained on.
+
+**What was found.**
+
+| arm | seeds | farm: mean per-country F1 | at t = 0.4 | poultry: mean F1 |
+|---|---|---|---|---|
+| v9 (production) | 1 | **0.879** | **0.868** | 0.819 |
+| r4_a baseline | 3 | 0.858 ± 0.002 | 0.839 ± 0.012 | 0.811 ± 0.004 |
+| r4_d freeze0 + 6 bands | 3 | 0.876 ± 0.011 | 0.850 ± 0.009 | 0.826 ± 0.011 |
+| r5_i per-country cap | 1 | **0.882** | 0.867 | 0.830 |
+
+1. **Same ranking as the AUC campaign, same conclusion.** The whole spread is
+   0.02 at a seed sd of ~0.01; no round_4 lever separates from its baseline, v9 is
+   best or tied on every variant of the metric, and round_5's single seeds are
+   within one seed sd of r4_d.
+2. **Her threshold criterion is degenerate on these eval sets.** The F1-argmax
+   lands at 0.01–0.23 for every model but v6, moves by up to 0.15 between seeds of
+   the same recipe, and flags 75–81 % of the world as farms — because the focal
+   `eval` sets are 70–90 % farms and the scores are bimodal, so the mean-F1 curve
+   is flat from ~0.03 to ~0.3. Report the plateau, not the argmax; keep 0.4.
+3. **Albania is the one country that separates models** (13 % farm prevalence →
+   precision 0.27–0.49; F1 0.24 for v6, 0.65 for v9, 0.61–0.62 for the round_5
+   balanced arms). The focal countries are saturated at F1 0.88–0.97.
+4. **Swapping any candidate for v9 changes about one flagged cluster in ten** on
+   the unlabelled world (Jaccard 0.84–0.90 at t = 0.4), whichever arm it is — the
+   cross-country score drift of Part 7 seen from the map's side.
+

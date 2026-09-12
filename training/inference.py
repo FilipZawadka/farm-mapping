@@ -354,6 +354,22 @@ def score_candidates(cfg: PipelineConfig) -> gpd.GeoDataFrame:
     dated_path = scored_dir / f"scored_candidates_{stamp}.parquet"
     shutil.copy2(output_path, dated_path)
     log.info("Saved %d scored candidates to %s (+ %s)", len(scored_gdf), output_path, dated_path.name)
+
+    # Rachel-style per-country threshold metrics (training/country_metrics.py):
+    # precision/recall vs threshold per country, one global threshold that
+    # maximises the mean per-country F1, P/R/F1 at it, FP/FN rates, poultry
+    # gate confusion. Computed on this run's own labels/splits, so it is only
+    # meaningful when the candidates carry final_label + cnn_split_assigned
+    # (every Rachel-cluster config does). Never allowed to fail a scoring run.
+    try:
+        from .country_metrics import format_summary, full_report, write_report
+        class_names = getattr(cfg.model, "class_names", None)
+        table = pd.DataFrame(scored_gdf.drop(columns="geometry"))
+        report_path = write_report(table, scored_dir, class_names=class_names)
+        log.info("Per-country threshold metrics -> %s\n%s", report_path,
+                 format_summary(full_report(table, class_names=class_names)))
+    except Exception as exc:  # noqa: BLE001 -- metrics are a report, not a gate
+        log.warning("country_threshold_metrics skipped: %s", exc)
     return scored_gdf
 
 

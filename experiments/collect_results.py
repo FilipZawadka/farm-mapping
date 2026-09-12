@@ -36,6 +36,9 @@ WANT = [
     # Written only by region-balanced runs (docs/COUNTRY_BALANCING_PLAN.md):
     # proves what the sampler did; evaluate_balancing.py reads it.
     "sampling_report.json",
+    # Written by training/inference.py after scoring: Rachel-style per-country
+    # threshold metrics (training/country_metrics.py).
+    "country_threshold_metrics.json",
 ]
 
 
